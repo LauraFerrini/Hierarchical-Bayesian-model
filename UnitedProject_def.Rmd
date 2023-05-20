@@ -1,0 +1,2316 @@
+---
+output:
+  pdf_document:
+    includes:
+      in_header: mystyles.sty
+      before_body: title.sty
+      # please, modify title.sty for your title page
+    number_sections: yes
+    toc: yes
+    citation_package: natbib
+  word_document: default
+  html_document: default
+documentclass: book
+classoption: a4paper
+bibliography: bibtexexample.bib
+biblio-style: apalike
+header-includes:
+   \usepackage{float}
+   \floatplacement{figure}{H}
+---
+# Introduction
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  fig.path = 'figs/',
+  tidy = TRUE,
+  fig.align = 'center',
+  fig.show = 'hold',
+  par = TRUE,
+  warning = FALSE,
+  message = FALSE
+  )
+RNGkind("default")
+```
+
+
+```{r}
+food <- read.csv("Food_Production.csv")
+food[1:9, 1:5]
+```
+
+The Food Production dataset contains 43 most common food types and several variables about their CO2 production across different stages in the lifecycle of production, such as, processing, transport, packaging and so on.
+CO2 outputs of each stage are expressed in kg per kg of food product.
+\hfill\break
+In our analysis we will only deal with the variable `Total_emissions` which summarizes all the other variables regarding CO2 production for each food type. The dataset will be divided into 9 groups based on food type regardless of `Total_emissions`'s value. \hfill\break
+The groups are: "Grain_Products", "Vegetables", "Oils", "Fruit",
+"Dairy_Products&Eggs", "Legumes&Nuts", "Meat",
+"Fish", "Others".
+```{r}
+food <- cbind(food, Group = rep(NA, dim(food)[1]))
+food <- dplyr::relocate(food, Group, .before = Land.use.change)
+food$Group <- c(1,1,1,1,1,2,2,9,9,6,2,6,6,6,6,3,3,3,3,3,2,6,2,
+                2,2,4,4,4,4,9,4,9,9,7,7,7,7,7,5,5,5,8,8)
+food1 <- food[,c(1,2,10)]
+y_bar <- as.vector(tapply(food1$Total_emissions, food$Group, mean))
+m <- length(y_bar)
+sv_j <- as.vector(tapply(food1$Total_emissions, food1$Group, var))
+nj <- as.vector(table(food1$Group))
+table(food$Group)
+```
+In the code above we modified the dataset adding the column `Group` and keeping just the column of interest `Total_emissions`. \hfill\break
+Unfortunately the dataset has few observations and so when splitting it into groups we obtain fairly small subsets, this means we can count on small information from the data. \hfill\break
+All our results will be clearly affected by this fact, nevertheless we managed to carry out an analysis using weakly-informative priors anyway. \hfill\break
+Of this grouped dataset we can compute the sample means for each food group and the resulting vector is `r toString(round(y_bar, 2))`.
+The sample means are quite heterogeneous, hence we have groups polluting much more than others on average. This can be noticed looking at the boxplot representing CO2 emissions 
+```{r}
+my_col=hcl.colors(n=9, palette = "BrBG")
+boxplot(food1$Total_emissions ~ food1$Group, col= my_col,
+        main = "Data boxplots", xlab= "Groups", 
+        ylab = "CO2 emissions")
+```
+
+\hfill\break
+The core of our analysis is to implement a hierarchical Bayesian model to make inference on average level of C02 group emissions and 
+therefore check whether the differences between means are a feature of our sample or can be assumed as true for the groups' populations. \hfill\break
+Our final goal though is prediction: we want to compute the probability that new observations from the meat group are more polluting than those from others'. \hfill\break
+A Bayesian hierarchical model is perfect to cope with this problem as perhaps having a few more high or low polluting observations within certain group could drastically change a Frequentist test, while having a rather negligible impact in a Bayesian setting.
+
+
+# Model I
+
+The first model we implemented is a hierarchical two levels model as units are considered to be nested within groups. \hfill\break
+Model assumptions are the following
+\begin{itemize}
+  \item data $y_{1,j}, \ ... \ ,y_{nj,j}$ are Normally distributed \\
+  $$y_{1,j}, \ ... \ ,y_{nj,j}|\theta_j, \sigma^2 \sim N(\theta_j,        \sigma^2)$$
+  \item $\theta_j$, $\sigma^2$ are each assigned a prior
+  \begin{enumerate}
+    \item $\theta_j|\mu, \tau^2 \ \sim \ i.i.d. N(\mu, \tau^2)$ Each       prior hyperparameter is assigned yet another prior
+    \begin{itemize}
+      \item $\mu|\mu_0,\gamma_0^2 \ \sim \ N(\mu_0,\gamma_0^2)$
+      \item $\tau^2|\eta_0, \tau_0^2 \ \sim \ I-Gamma(\eta_0,                \tau_0^2)$
+    \end{itemize}
+    \item $\sigma^2|\nu_0, \sigma_0^2 \ \sim \ I-Gamma(\frac{\nu_0}{2},     \frac{\nu_0\sigma_0^2}{2})$
+  \end{enumerate}
+  \item the priors on $\theta_j, \sigma^2$ are assumed independent
+  $$p(\boldsymbol{\theta} ,\sigma^2) = p(\boldsymbol{\theta}) \cdot       p(\sigma^2)$$
+\end{itemize}
+
+
+## Posterior inference
+
+### Full conditional of $\theta_j$
+The prior of $\theta_j$ is semi-conjugate to the Normal likelihood and hence the full conditional is available in close form
+
+\begin{gather}
+p(\theta_j|y_1, \ ,...,\ y_{nj}, \sigma^2) \propto \underbrace{p(y_1, \ ,...,\ y_{nj}| \theta_j, \sigma^2)}_{Likelihood} \cdot \underbrace{p(\theta_j)}_{prior} \qquad \text{because of prior independence} \nonumber \\
+=\prod^n_{i=1} \left\{\frac{1}{\sqrt{2\pi}\sigma^2} \ exp\left\{\frac{1}{2\sigma^2}(y_{ij}-\theta_j)^2\right\} \right\} \cdot \frac{1}{\sqrt{2\pi}\sigma^2} \ exp\left\{\frac{1}{2\sigma^2}(\theta_j-\mu)^2\right\} \nonumber
+\end{gather}
+From theory we know the full conditional is
+$$\theta_j|\sigma^2,y_{1,j}, \ ... \ ,y_{nj,j}, \sim N\left( \frac{n_j\bar{y_j}/\sigma^2 + \mu/\tau^2}{n_j/\sigma^2 + 1/\tau^2}, \ (n_j/\sigma^2 + 1/\tau^2)^{-1} \right)$$
+
+### Full conditional of $\sigma^2$
+
+The prior of $\sigma^2$ is semi-conjugate to the likelihood too, and due to prior independence between $\theta_j, \sigma^2$ we have
+\begin{gather}
+p(\sigma^2|y_1, \ ,...,\ y_{nj}, \theta_j) \propto \underbrace{p(y_1, \ ,...,\ y_{nj}| \theta_j, \sigma^2)}_{Likelihood} \cdot \underbrace{p(\sigma^2)}_{prior} \nonumber \\
+=\prod^n_{i=1} \left\{\frac{1}{\sqrt{2\pi}\sigma^2} \ exp\left\{-\frac{1}{2\sigma^2}(y_{ij}-\theta_j)^2\right\} \right\}
+\frac{\frac{\nu_0\sigma_0^2}{2}^{\frac{\nu_0}{2}}}{\Gamma(\frac{\nu_0}{2})}\left(
+\frac{1}{\sigma^2}\right)^{\frac{\nu_0}{2}-1} exp\left\{-\frac{\nu_0\sigma_0^2}{2}\frac{1}{\sigma^2} \right\} \nonumber \\
+\propto \left(\frac{1}{\sigma^2}\right)^{\frac{nj}{2}} exp\left\{-\frac{1}{2\sigma^2}\sum^{nj}_{i=1} (y_{ij}-\theta_j)^2 \right\} \cdot \left(
+\frac{1}{\sigma^2}\right)^{\frac{\nu_0}{2}-1} exp\left\{-\frac{\nu_0\sigma_0^2}{2}\frac{1}{\sigma^2} \right\} \nonumber \\
+\propto \left(\frac{1}{\sigma^2}\right)^{\frac{nj + \nu_0}{2}-1} \cdot exp\left\{-\frac{1}{2\sigma^2}\left[\sum^{nj}_{i=1} (y_{ij}-\theta_j)^2 + \nu_0\sigma_0^2\right] \right\} \nonumber \\
+\propto \left(\frac{1}{\sigma^2}\right)^{\frac{\nu_n}{2}-1} \cdot exp\left\{-\frac{1}{2\sigma^2}\nu_n \frac{1}{\nu_n} \left((nj-1)S^2 + \nu_0\sigma_0^2 \right) \right\} \nonumber \\
+\text{With} \nonumber \\
+\nu_n = \nu_0 + nj \qquad \qquad \text{and} \nonumber \\
+\sigma_n^2 = \frac{1}{\nu_n} \left((nj-1)S^2 + \nu_0\sigma_0^2 \right) \nonumber
+\end{gather}
+
+
+### Posterior on $\mu$
+
+The Normal prior on $\mu$ is conjugate to the Normal joint distribution of $\theta_1, \ ... \ ,\theta_j$ so can derive analytically its posterior
+\[
+p(\mu|\theta_1, \ ... \ ,\theta_j) \propto p(\theta_1, \ ... \ ,\theta_j|\mu, \tau^2) \cdot p(\mu) \qquad \text{Supposing prior independece between} \ \mu, \ \tau^2
+\]
+\[
+\mu|\theta_1, \ ... \ ,\theta_j \ \sim \ N \left(\frac{\mu_0/\gamma_0^2 + m/\tau^2 \bar{y_j}}{1/\gamma_0^2 + m/\tau^2},\left(\frac{1}{\gamma_0^2} + \frac{m}{\tau^2}\right)^{-1} \right)
+\]
+
+### Full conditional on $\tau^2$
+
+Assuming prior independece between $\mu, \tau^2$ we have that the $I-Gamma$ prior on $\tau^2$ is semi-conjugate to the joint distribution of $\theta_1, \ ... \ ,\theta_j$. Hence can derive
+\[
+p(\tau^2|\mu,\theta_1, \ ... \ ,\theta_j) \propto p(\theta_1, \ ... \ ,\theta_j|\mu, \tau^2) \cdot p(\tau^2)
+\]
+Which results
+\[
+\tau^2|\mu,\theta_1, \ ... \ ,\theta_j \ \sim \ I-Gamma \left(\frac{\eta_0+m}{2}, \frac{\eta_0 + \sum_{j=1}^m(\theta_j - \mu)^2}{2} \right)
+\]
+
+
+## R implementation
+
+In `R` we wrote the function `Hierarchical_1` which implements the following algorithm
+\begin{itemize}
+  \item As a preliminary step we assigned all prior hyperparameters to    $\theta_j$,  $\sigma_j^2$, $\mu$, $\tau^2$ 
+  \begin{itemize}
+    \item $\theta_j$:
+    \begin{itemize}
+      \item set $\theta_j = \bar{y_j}$ as initial value
+      \item assigned $\mu = \mathbb{E}(\bar{y_j})$ and $\tau^2 =              Var(\bar{y_j})$
+    \end{itemize}
+    \item $\sigma_j^2$:
+    \begin{itemize}
+      \item $\sigma_j^2 = \mathbb{E}(S_j^2)$ with $S_j^2$ sample              variance for the $j-th$group
+      \item we set $\nu_0 = 1$ and $\sigma_0^2 = 100$ to be                    weakly-informative on variance
+      \end{itemize}
+    \item $\tau^2$: $\eta_0 = 1$ and $\tau_0^2 = 100$ for weakly           informativness
+    \item $\mu$: to set its hyperparameters we checked the `summary` of    the sample means $\bar{y_j}$ and assigned hyperparameters to cover     the whole "range" of the sample means, i.e. $\mu_0 = 12$ and           $\gamma_0^2 = 6^2$
+  \end{itemize}
+  \item for $s=1, ..., S$:
+  \begin{enumerate}
+  \item sample $\mu^{(s)}$ from $p(\mu^{(s)}|\rho_n, \gamma_n^2) =        N(\rho_n, \gamma_n^2)$
+  \item sample $\tau^{2(s)}$ from $p(\tau^{2(s)}|\eta_n, \lambda_n) =    I-Gamma(\eta_n, \lambda_n)$
+  \item draw $\theta_j^{(s)}$ from $p(\theta_j^{(s)}| \mu_n^{(s)},        \tau_n^{2(s)}) = N(\mu_n^{(s)},\tau_n^{2(s)})$
+  \item draw $\sigma^{2(s)}$ from $p(\sigma^{2(s)}|y_1, \ ,...,\         y_{nj},\theta_j^{(s)})$
+  \end{enumerate}
+\end{itemize}
+
+```{r}
+Hierarchical_1 <- function(S, dati) {
+  
+  ## Prior hyperparameters
+  # Prior on sigma_sq
+  
+  sigma2 <- mean(sv_j)
+  nu0 <- 1
+  s02 <- 100
+  
+  # Prior tau_sq
+  
+  eta0 <- 1
+  tau02 <- 100
+  
+  # Prior on mu
+  # Check summary(y_bar) #########
+  
+  mu0 <- 12
+  g02 <- 6^2
+  
+  # Prior on theta ****
+  theta <- y_bar
+  
+  mu <- mean(y_bar)
+  tau_sq <- var(y_bar)
+  
+  
+  
+  
+  Theta_post <- matrix(NA, S, m)
+  Musita_post <- matrix(NA, S, 3)
+  
+  
+  for(s in 1:S) {
+    # 1. Draw theta
+    
+    for (j in 1:m) {
+      mean_1 <- (mu*(1/tau_sq) + y_bar[j]* 
+                   (nj[j]/sigma2))/((1/tau_sq)+ (nj[j]/sigma2))
+      var_1 <- ((1/tau_sq) + (nj[j]/sigma2))^(-1)
+      theta[j] <- rnorm(1, mean_1, sqrt(var_1))
+    }
+    Theta_post[s,] <- theta
+    
+    # 2. Draw sigma2
+    
+    alpha_1 <- (nu0 + nrow(dati))
+    
+    beta_1 <- nu0*s02
+    for(j in 1:m) {
+      beta_1 <- beta_1 + sum((dati$Total_emissions[dati$Group == j] - 
+                                theta[j])^2)
+    }
+    
+    sigma2 <- 1/rgamma(1, alpha_1/2, beta_1/2)
+    
+    # 3. Sample mu
+    mean_2 <- (1/g02 * mu0 + m/tau_sq * mean(theta))/(1/g02 + m/tau_sq)
+    var_2 <- (1/g02 + m/tau_sq)^(-1)
+    mu <- rnorm(1, mean_2, sqrt(var_2))
+    
+    
+    # 4. Sample tau_sq
+    alpha_2 <- (eta0+m)
+    beta_2 <- eta0 + sum((theta - mu)^2)
+    
+    tau_sq <- 1/rgamma(1, alpha_2/2, beta_2/2)
+    
+    Musita_post[s,] <- c(mu, sigma2, tau_sq)
+  }
+  return(list(Theta_post = Theta_post, Musita_post = Musita_post))
+}
+```
+Above is the function that we will run for `5000` iterations, assigning
+the results to a list that can be split into matrices.
+
+```{r}
+set.seed(12345)
+out = Hierarchical_1(S=5000, dati = food1)
+Theta_post  = out$Theta_post
+Musita_post = out$Musita_post
+
+```
+
+Now we can check the traceplots and Autocorrelation functions of $\mu, \ \sigma^2, \ \tau^2$
+```{r}
+# Traceplot Musita_post
+S=5000
+par(mfrow = c(3,1))
+for (i in 1:3) {
+  plot(1:S, Musita_post[,i], type = "l", xlim = c(0, 2000),col="deepskyblue4")
+  abline(h = mean(Musita_post[,i]),col="chocolate3", lwd=0.8 )
+  mode_1 <- density(Musita_post[,i])$x[which.max(density(Musita_post[,i])$y)]
+  abline(h = mode_1,col="darkolivegreen1", lwd=0.8 )
+}
+
+#acf Musita_post
+par(mfrow = c(3,1))
+for(i in 1:3) {
+  acf(Musita_post[,i], 100, main = "")
+}
+```
+
+The acf's do not look too good. We have quite some autocorrelation between values. We can run again the function `Hierarchical_1` for `25000` iterations and procede to thinning the chains.
+```{r}
+out2 = Hierarchical_1(S=25000, dati=food1)
+Theta_post = out2$Theta_post
+Musita_post= out2$Musita_post
+#Theta
+Theta_post2 <- Theta_post[seq(1,25000, by = 5),]
+# Musita
+Musita_post2 <- Musita_post[seq(1, 25000, by = 5),]
+```
+
+
+Can now check again the acf's
+```{r}
+S <- 25000
+par(mfrow = c(3,1))
+for(i in 1:3) {
+  acf(Musita_post2[,i], 100, main = "")
+}
+```
+
+The situation has indeed improved.
+
+
+### Final plots
+
+Can now plot the histogram of empirical distributions of $\theta_j$ obtained in the algorithm
+```{r}
+par(mfrow = c(2,2))
+idx <- c(1,3,7,9)
+for(i in idx) {
+  hist(Theta_post2[,i], breaks = 100, col = "aquamarine3", 
+       border = "deepskyblue4", main = "")
+  abline(v = mean(Theta_post2[,i]),col="chocolate3", lwd=2 )
+  mode_1 <- density(Theta_post2[,i])$x[which.max(density(Theta_post2[,i])$y)]
+  abline(v = mode_1,col="darkolivegreen1", lwd=2 )
+  abline(v = apply(Theta_post2, 2, quantile, 0.05)[i], lty = 2)
+  abline(v = apply(Theta_post2, 2, quantile, 0.95)[i], lty = 2)
+}
+```
+
+Chose to plot just those of ... groups because they will the most representative of all the groups in further analysis we will make.
+
+#### Prior vs. posterior plots
+
+We now want to plot \textbf{prior vs posterior} distributions of $\theta_j$.
+
+Before proceeding we need to get a sample that approximates the marginal prior distribution of  $\theta_j$. This is done by using the function `marginal_prior_H1H2`. Accordingly to our model assumptions we have that $\theta_j| \mu, \tau^2 \sim N \left(\mu, \tau^2 \right)$, where $\mu, \tau^2$ are not considered as fixed, but they are random. Indeed, we have assumed that: $\mu \sim N \left(\mu_0, \gamma_0^2 \right)$ and $\frac{1}{\tau^2} \sim Gamma \left( \eta_0/2, \eta_0 \tau_0^2/2\right)$.
+Hence to get a sample that approximates the marginal prior distribution of $\theta_j$ we need to:
+
+$\forall s=1,..,S$
+\begin{enumerate}
+  \item Sample $\mu^{(s)}$ from $N \left(\mu_0, \gamma_0^2 \right)$
+  \item Sample $\tau^{2(s)}$ from $I-Gamma \left( \eta_0/2, \eta_0 \tau_0^2/2\right)$
+  \item Sample $\theta_j^{(s)}$ from $N \left(\mu^{(s)}, \tau^{2(s)} \right)$
+\end{enumerate}
+
+At the end we will obtain a sample of $S$ draws that approximates the marginal prior distribution of $\theta_j$ and we can plot it against its posterior distribution.
+```{r}
+marginal_prior_H1H2 <- function(N) {
+  Theta_marg_H1 = matrix(NA, N, m)
+  
+  for (j in 1:m){
+    mu_marg       = rnorm(N, 12, 6)
+    tau_marg      = 1/rgamma(N,1,100)
+    
+    Theta_marg_H1[,j] = rnorm(N, mu_marg, sqrt(tau_marg))
+    
+  }
+  
+  return(Theta_marg_H1 = Theta_marg_H1)
+}
+
+Theta_marg_H1 = marginal_prior_H1H2(N = 5000) # draws from the marginal prior
+# of theta_j
+
+# Prior vs. posterior plots
+par(mfrow = c(2,2))
+for(j in idx){
+  plot(density(Theta_post2[,j],adj=2),main="", 
+       xlab=expression(theta[j]), ylab="density",lwd=2, col="darkgreen")
+  
+  lines(density(Theta_marg_H1[,j], adj = 2),
+        lwd=2, col="darkolivegreen3")
+  legend("topleft",legend=c("posterior","prior"),lwd=c(2,2),
+         col=c("darkgreen","darkolivegreen3"),bty="n")
+}
+```
+
+
+From the plots above we can notice how spread the priors are with respect to the much more concentrated posteriors. Furthermore looking closely at the third plot, that of the meat group's approximate posterior mean, we see it is almost bimodal. \hfill\break
+This is because the posterior took information from the data which are very homogeneous in this group, ranging from the low polluting poultry meat to the extremely polluting beef herd.
+
+
+### Boxplot of posterior draws of $\theta_j$
+
+```{r}
+{boxplot(Theta_post2,  col = my_col, main = expression(
+  paste("H1 Posterior on ",theta[j])), xlab = "Groups",
+  ylab= "")
+title(ylab = expression(paste("p(",theta[j], "|", mu,",", sigma^2, ",",
+                              italic(y[1]),"...",italic(y[m]),")") ),
+      mgp = c(2,1,0))
+library(plotrix)
+draw.circle(7,17,0.5, border ="red", lwd = 2)}
+```
+
+
+In this boxplot are represented the approximated posterior group means. At first glance we can see that even though the posterior means are quite similar to the sample means the different within group variances are not at all respected by our posterior distributions. We will solve this problem in the next models. \hfill\break
+Furthermore it is clear that some groups' distributions have too many negative values to be considered totally reliable: such as the second, fourth and sixth. This problem does not affect our analysis too much as considering $90\%$ empirical confidence intervals for the empirical distributions of $\theta_j$, we see that most of them are always positive and that those that are not have just few negative values.  Nevertheless this issue will be tackled in the last model.
+
+```{r, echo=FALSE}
+res_H1   = matrix(NA, 9, 3)
+rownames(res_H1) <- 1:9
+colnames(res_H1) <- c("LB 90% CI", "UB 90% CI", "Post Exp theta_j")
+
+res_H1[,1] <- apply(Theta_post2, 2, quantile, 0.05)
+res_H1[,2] <- apply(Theta_post2, 2, quantile, 0.95)
+res_H1[,3] <- apply(Theta_post2, 2, mean)
+knitr::kable(res_H1)
+```
+
+
+## Shrinkage
+
+Shrinkage effect moves the posterior mean $\mathbb{E}(\theta_j|\mathbf{y}, \mu,\tau^2, \sigma^2)$ away from the sample mean $\bar{y_j}$ towards the sampled values of the overall average of group means ($\mu$). \hfill\break
+We will check for the presence of shrinkage through a graphical analysis.
+
+```{r}
+# Shrinkage effect
+par(mfrow = c(1,2))
+plot(y_bar, res_H1[,3], xlab=expression(bar(italic(y))), 
+     ylab="")
+title(ylab = expression(paste("E[",theta[j], "|", mu,",", sigma^2, ",",
+                              italic(y[1]),"...",italic(y[m]),"]")),
+      mgp = c(2,1,0))
+for(i in 1:m) {
+  if(i == 4) {
+    text(y_bar[i], res_H1[i,3]+0.6, labels = i)  
+  }
+  else if(i == 9){
+    text(y_bar[i], res_H1[i,3]-0.6, labels = i)  
+  }
+  else {
+    text(y_bar[i]+0.6, res_H1[i,3], labels = i)
+  }
+}
+abline(a=0, b=1, col = "darkred")
+
+#Shrinkage
+
+plot(nj, (y_bar - res_H1[,3]), xlab = "sample size", ylab = "")
+title(ylab = expression(bar(italic(y)) - hat(theta)), mgp = c(2,1,0))
+for(i in 1:m) {
+  if(i == 4) {
+    text(nj[i]-0.2, (y_bar[i] - res_H1[i,3]), labels = i)
+  }
+  else {
+    text(nj[i]+0.2, (y_bar[i] - res_H1[i,3]), labels = i)
+  }
+}
+abline(h = 0, col="darkred")
+
+```
+
+These plots seem good, even though there is some shrinkage, it is negligible for most groups. Group 7 is slightly more problematic but still the shrinkage is about $25\%$ of its sample mean. The situation will worsen changing some assumptions later on.
+
+## Prediction
+
+
+```{r}
+# P(theta_meat > theta_dairy)
+prob_1 <- NULL
+pred_1 <- NULL
+for (j in 1:m){
+  if (j != 7){
+    prob_1 <- c(prob_1, mean(Theta_post2[,7]>Theta_post2[,j]))
+    pred_1 <- c(pred_1, mean(rnorm(5000, Theta_post2[,7], sqrt(Musita_post2[,2])) >
+                                 rnorm(5000, Theta_post2[,j], sqrt(Musita_post2[,2]))) )
+  }
+}
+res_P_1 <- cbind(prob_1, pred_1)
+colnames(res_P_1) <- c("P(Theta_7 > Theta_j)", "P(Y*_7 > Y*_j)")
+knitr::kable(res_P_1)
+```
+
+We can see from the first column of the table the probabilities for $\theta_7$ meat's group average to be higher than the group mean of others'. \hfill\break
+In the second column instead we have $p(y_7^* > y_j^*) \ \ \forall j\neq7$, the probability for a new observation from meat group to be higher than that from another group. \hfill\break
+Both the columns show remarkably high probabilities, but the second's are slightly lower, this is due to the variance of prediction being higher than that of inference. In prediction indeed individual variability has to be taken into account.
+
+## Model cheking
+
+Here we perform model checking. To check if our model was appropriate for the data we chose as statistic the expected value of new predicted values $y^*$ to make comparisons with the sample mean $\bar{y_j}$.
+
+```{r}
+T_mc <- matrix(NA, 5000, m)
+for (j in 1:m){
+  for (i in 1:5000){
+    
+    y_star = rnorm(100, Theta_post2[i,j], Musita_post2[i,2])
+    T_mc[i,j] = mean(y_star)
+  }
+}
+```
+
+```{r, echo=FALSE}
+
+# Comparison of the distribution of T_mc VS y_bar
+
+res_mod_check = matrix(NA, m, 3)
+colnames(res_mod_check) <-c("90% LB", "90% UB", "y_bar")
+res_mod_check[,1] <- apply(T_mc, 2, quantile, 0.05)
+res_mod_check[,2] <- apply(T_mc, 2, quantile, 0.95)
+res_mod_check[,3] <- y_bar
+
+#knitr::kable(res_mod_check)
+```
+
+```{r}
+par(mfrow = c(2,2))
+for(i in idx) {
+  hist(T_mc[,i], breaks = 100, col = "chartreuse2", 
+       border = "chartreuse4", main = "")
+  abline(v = y_bar[i],col="darkorange", lwd=3 )
+  abline(v = res_mod_check[i,1], col ="darkorange4", lty=2)
+  abline(v = res_mod_check[i,2], col ="darkorange4", lty=2)
+}
+```
+
+
+To decide whether our model is good and whether our data are unusual or not we can look where the sample mean lies in the empirical distribution of expected value of predicted data. In this case there seem to be no issues.
+
+# Model II
+
+From the boxplot of data we notice there are different variances for each group. The first hierarchical model implemented above does not take into account these differences in variances within groups but just the differences in means. \hfill\break
+If the population means vary across groups it would be sensible to allow also the population variances to do so in our model.
+\hfill\break
+
+```{r, echo=FALSE}
+my_col=hcl.colors(n=9, palette = "BrBG")
+boxplot(food1$Total_emissions ~ food1$Group, col= my_col,
+        main = "Data boxplots", xlab= "Groups", 
+        ylab = "CO2 emissions")
+```
+
+Keeping the same prior on $\boldsymbol{\theta}$ we had in the previous case
+\[
+p(\theta_j|\mu_0, \tau_0^2) = N(\mu_0, \tau_0^2)
+\]
+
+let now $\sigma^2_j$ be the $j-th$ group's specific variance.\hfill\break
+This way our model becomes
+\[
+Y_{1,j}, \ ... \ , Y_{nj,j} \sim i.i.d. \ N(\theta_j, \sigma^2_j) \quad \forall j = 1, ..., m
+\]
+The distribution assumption for our data stays unchanged if not for the fact that each group has  now its own group mean and its own group variance.
+
+The new assumption results in the same full conditional of $\theta_j$, but changes its posterior parameters which now both depend on the group specific variance $\sigma^2_j$
+\[
+\theta_j |y_{1,j}, ... , y_{nj,j}, \sigma^2_j \sim N \left( \frac{n_j\bar{y_j}/\sigma^2_j + \mu/\tau^2}{n_j/\sigma^2_j + 1/\tau^2}, \ (n_j/\sigma^2_j + 1/\tau^2)^{-1} \right)
+\]
+
+
+Group variances can be assigned the same prior we assigned to $\sigma^2$ in the previous model, reparametrized with $\alpha$ and $\beta$ for computational convenience. Therefore can write
+\[
+\sigma^2_1, \ ... \ ,\sigma^2_m| \alpha, \beta \sim i.i.d. \ I-Gamma(\alpha, \beta)
+\]
+
+As opposite to the previous setting though, here we assign a prior to $\alpha$ and $\beta$ parameters. This is because if we kept prior hyperparameters fixed the sample information we have about within group variances would have gone wasted. Now instead we are interested in using the sample information on $\sigma^2_j$'s to improve their estimation.
+
+## Prior on $\alpha$ and $\beta$ hyperparameters
+
+We can put a Gamma prior on both $\alpha$ and $\beta$, i.e.
+\begin{gather}
+\alpha|a,b \sim Gamma(a,b) \nonumber \\
+p(\alpha|a,b) \propto \alpha^{a-1} \cdot exp\{ -b \alpha \} \nonumber
+\end{gather}
+and
+\begin{gather}
+\beta|c,d \sim Gamma(c,d) \nonumber \\
+p(\beta|c,d) \propto \beta^{c-1} \cdot exp\{ -d \beta \} \nonumber
+\end{gather}
+We will also suppose prior independence between the two parameters
+\[
+p(\alpha, \beta) = p(\alpha) \cdot p(\beta) \nonumber
+\]
+
+This way the prior on $\beta$ is semi-conjugate to the joint "likelihood" (joint distribution of $\boldsymbol{\sigma^2}$)
+\[
+p(\boldsymbol{\sigma^2} |\alpha, \beta) = \left( \frac{\beta^\alpha}{\Gamma(\alpha)} \right)^m \left[ \prod_{j=1}^m  \frac{1}{\sigma^2_j}\right]^{\alpha -1} \cdot \  exp\left\{- \beta \sum_{j=1}^m \frac{1}{\sigma^2_j}\right\}
+\]
+
+Hence can analytically derive the full conditional on $\beta$. \hfill\break
+The prior on $\alpha$ instead is not semi-conjugate, hence we will have to implement a Metropolis Hastings algorithm to approximate its full conditional.
+
+### Full conditional of $\beta$
+Can compute the full conditional of $\beta$ as
+\[
+p(\beta| \boldsymbol{\sigma^2}, \alpha, c, d) \propto p(\boldsymbol{\sigma^2} |\alpha, \beta) p(\beta|c,d)
+\]
+where $p(\boldsymbol{\sigma^2} |\alpha, \beta)$ can be rewritten keeping just what depends on $\beta$. Hence
+\begin{gather}
+p(\beta| \boldsymbol{\sigma^2}, \alpha)
+\propto \beta^{m \alpha} \cdot exp\left\{- \beta \sum_{j=1}^m \frac{1}{\sigma^2_j}\right\} \cdot \beta^{c-1} \cdot exp\{ -d \beta \} \nonumber \\
+= \beta^{m\alpha + c -1} \cdot exp\left\{ -\beta \left(\sum_{j=1}^m \frac{1}{\sigma^2_j} +d \right)\right\} 
+\end{gather}
+
+
+Formula () is a Gamma, therefore we can easily sample $\beta$ from its full conditional conditionally on $\alpha, \boldsymbol{\sigma^2}$.
+
+### Full conditional of $\alpha$
+
+Let us now derive the full conditional distribution of $\alpha$:
+
+\begin{gather}
+p(\alpha| \boldsymbol{\sigma^2}, \beta, a, b) \propto p(\boldsymbol{\sigma^2} | \beta, \alpha) p(\alpha|a, b) \nonumber \\
+\left( \frac{\beta^\alpha}{\Gamma(\alpha)} \right)^m \left[ \prod_{j=1}^m  \frac{1}{\sigma^2_j}\right]^{\alpha -1} \cdot \alpha^{a-1} exp\{ -b \alpha \} \nonumber
+\end{gather}
+
+This time we have written only the parts depending on $\alpha$ in $p(\boldsymbol{\sigma^2} | \beta, \alpha)$ and multiplied by $p(\alpha|a,b)$, but the result can not be traced back to any well known distribution.
+Hence even though the full conditional is analytically available, to draw $\alpha$ from it we need to implement a Metropolis Hastings algorithm.
+
+
+Therefore we can approximate posterior draws of $(\alpha, \beta)$ from $p(\alpha, \beta| \boldsymbol{\sigma^2})$ implementing the following algorithm of Metropolis Hastings within a Gibbs sampler:
+
+$\forall s=1,..,S:$
+\begin{itemize}
+  \item Draw a value $\beta^{(s)}$ from its full conditional distribution: $p(\beta|\alpha, \boldsymbol{\sigma^2},c,d)$ \qquad\qquad\quad \textbf{Gibbs Sampler step}
+  \item Draw $\alpha$: \qquad\qquad\qquad \textbf{Metropolis Hastings step}
+\begin{enumerate}
+  \item Propose $\alpha^*$ from its proposal: $q(\alpha^*| \alpha^{(s)})$
+  \item Compute the posterior ratio $r^{MH} = \frac{p(\alpha^*, \beta^{(s)}| \boldsymbol{\sigma^2})}{p(\alpha^{(s)}, \beta^{(s)}| \boldsymbol{\sigma^2})} \cdot \frac{q(\alpha^{(s)}| \alpha^*)}{q(\alpha^*| \alpha^{(s)})}$ \\
+where $p(\alpha^{(s)}, \beta^{(s)}| \boldsymbol{\sigma^2}) \propto \left( \frac{\beta^\alpha}{\Gamma(\alpha)} \right)^m \left[ \prod_{j=1}^m  \frac{1}{\sigma^2_j}\right]^{\alpha -1} \cdot \alpha^{a-1} exp\{ -b \alpha \} $
+  \item Set
+  \[
+  \left\{
+  \begin{array} {l}
+  \alpha^{(s+1)} = \alpha^* \quad \text{with probability} \quad min      \{1, r^{MH}\}\\
+  \alpha^{(s+1)} = \alpha^{(s)} \quad \text{with probability} \quad 1-   min \{1, r^{MH}\}
+  \end{array}
+  \right.
+  \]
+\end{enumerate}
+\end{itemize}
+The output of this algorithm will be a sequence of draws $\{(\alpha^{(1)}, \beta^{(1)}),..,(\alpha^{(s)}, \beta^{(s)})\}$ that approximates draws from the joint posterior of $\alpha$ and $\beta$.
+
+## Full conditional of $\sigma^2_j$
+In this model we are letting each group have its own $\sigma^2_j$ but we also assume prior independence between $\theta_j$ and $\sigma^2_j$,
+\[
+p(\boldsymbol{\theta} ,\boldsymbol{\sigma^2}) = p(\boldsymbol{\theta}) \cdot p(\boldsymbol{\sigma^2})
+\]
+with this assumption, and having derived the full conditionals for $\alpha$ and $\beta$, can now write the full conditional of $\sigma^2_j$.
+
+\begin{gather}
+p(\sigma^2_j|y_1, \ ,...,\ y_{nj}, \theta_j) \propto \underbrace{p(y_1, \ ,...,\ y_{nj}| \theta_j, \sigma^2_j)}_{Likelihood} \cdot \underbrace{p(\sigma^2_j)}_{prior} \nonumber \\
+=\prod^n_{i=1} \left\{\frac{1}{\sqrt{2\pi}\sigma^2_j} \ exp\left\{\frac{1}{2\sigma^2_j}(y_{ij}-\theta_j)^2\right\} \right\}
+\frac{\beta^{\alpha}}{\Gamma(\alpha)}\left(
+\frac{1}{\sigma^2_j}\right)^{\alpha-1} exp\left\{-\beta\frac{1}{\sigma^2_j} \right\} \nonumber \\
+\propto \left(\frac{1}{\sigma^2_j}\right)^{\frac{nj}{2}} exp\left\{\frac{1}{2\sigma^2_j}\sum^{nj}_{i=1} (y_{ij}-\theta_j)^2 \right\} \cdot \left(
+\frac{1}{\sigma^2_j}\right)^{\alpha-1} exp\left\{-\beta\frac{1}{\sigma^2_j} \right\} \nonumber \\
+\propto \left(\frac{1}{\sigma^2_j}\right)^{\frac{nj}{2}+ \alpha-1} \cdot exp\left\{-\frac{1}{\sigma^2_j}\left[\frac{\sum^{nj}_{i=1} (y_{ij}-\theta_j)^2}{2} +\beta\right] \right\} \nonumber
+\end{gather}
+
+Whence we derive the full conditional of $\sigma^2_j$
+
+\[
+\frac{1}{\sigma^2_j} \sim Gamma\left(\frac{nj}{2}+ \alpha, \quad \frac{\sum^{nj}_{i=1} (y_{ij}-\theta_j)^2}{2} +\beta \right)
+\]
+
+## R implementation
+
+In the `R` code, before implementing the algorithm, we defined some useful functions to perform the $MH$ part, namely:
+\hfill\break
+
+`full.cond.alpha` defines the full conditional of $\alpha$ found above, whereas `propose.alpha.star` is the function of the proposal we chose here to be
+$$q(\alpha^*| \alpha^{(s)}) = Gamma (\alpha^{(s)} \delta, \ \delta)$$ 
+
+```{r}
+prod.prec <- prod(1/sv_j)
+
+full.cond.alpha = function(alpha, beta, a, b, prod.prec, m){
+  
+ ((beta^alpha)/gamma(alpha))^m * prod.prec^(alpha-1) * alpha^(a-1) * 
+    exp(-b*alpha)
+  
+}
+
+propose.alpha.star = function(alpha, delta){
+  
+  rgamma(1, alpha*delta, delta)
+}
+```
+The algorithm implemented in `R` works as follows:
+\begin{itemize}
+  \item As a preliminary step we assigned initial values to $\theta_j$,  $\sigma_j^2$, $\mu$, $\tau^2$, $\alpha$, $\beta$ and all prior         hyperparameters
+  \begin{itemize}
+    \item $\theta_j$:
+    \begin{itemize}
+      \item set $\theta_j = \bar{y_j}$ as initial value
+      \item assigned $\mu = \mathbb{E}(\bar{y_j})$ and $\tau^2 =              Var(\bar{y_j})$
+    \end{itemize}
+    \item $\sigma_j^2$:
+    \begin{itemize}
+      \item $\sigma_j^2 = Var(y_{1:nj}) = S_j^2$ with $S_j^2$ sample         variance for the $j-th$group
+      \item we set $\alpha = \frac{(\mathbb{E}(S_j^2))^2}{Var(S_j^2)}$       and $\beta = \frac{\mathbb{E}(S_j^2)}{Var(S_j^2)}$ this way the        prior expectation is $\mathbb{E}(\sigma_j^2| \alpha, \beta) =          \mathbb{E}(S_j^2)$
+    \end{itemize}
+  \item $\alpha$ and $\beta$: as prior hyperparameters set $a = b = c = d = 1$ to be weakly informative and because setting them lower would     cause $\alpha$ and $\beta$ to go to $0$ too fast and break the         algorithm
+  \item $\tau^2$: $\eta_0 = 1$ and $\tau_0^2 = 100$ for weakly           informativness
+  \item $\mu$: to set its hyperparameters we checked the `summary` of    the sample means $\bar{y_j}$ and assigned hyperparameters to cover     the whole "range" of the sample means, i.e. $\mu_0 = 12$ and           $\gamma_0^2 = 6^2$
+  \end{itemize}
+  \item for $s=1, ..., S$:
+  \begin{enumerate}
+  \item sample $\mu^{(s)}$ from $p(\mu^{(s)}|\rho_n, \gamma_n^2) =        N(\rho_n, \gamma_n^2)$
+  \item sample $\tau^{2(s)}$ from $p(\tau^{2(s)}|\eta_n, \lambda_n) =    I-Gamma(\eta_n, \lambda_n)$
+  \item draw $\theta_j^{(s)}$ from $p(\theta_j^{(s)}| \mu_n^{(s)},        \tau_n^{2(s)}) = N(\mu_n^{(s)},\tau_n^{2(s)})$
+  \item draw $\beta^{(s)}$ from $p(\beta^{(s)}| \boldsymbol{\sigma^2},    \alpha) = Gamma(c^*,d^*)$
+  \item draw $\alpha^{(s)}$:
+  \begin{enumerate}
+  \item Propose $\alpha^*$ from its proposal: $q(\alpha^*|                \alpha^{(s)}) = Gamma (\alpha^{(s)} \delta, \ \delta)$
+  \item Compute the posterior ratio $r^{MH} = \frac{p(\alpha^*, \beta^{(s)}| \boldsymbol{\sigma^2})}{p(\alpha^{(s)}, \beta^{(s)}| \boldsymbol{\sigma^2})} \cdot \frac{q(\alpha^{(s)}| \alpha^*)}{q(\alpha^*| \alpha^{(s)})}$
+  \item Set
+  \[
+  \left\{
+  \begin{array} {l}
+  \alpha^{(s+1)} = \alpha^* \quad \text{with probability} \quad min      \{1, r^{MH}\}\\
+  \alpha^{(s+1)} = \alpha^{(s)} \quad \text{with probability} \quad 1-   min \{1, r^{MH}\}
+  \end{array}
+  \right.
+  \]
+  \end{enumerate}
+  \item draw $\sigma_j^{2(s)}$ from $p(\sigma^{2(s)}_j|y_1, \ ,...,\ y_{nj},        \theta_j^{(s)})$
+  \end{enumerate}
+\end{itemize}
+
+To perform the algorithm we wrote the function `Hierarchical_2`
+
+```{r}
+library(formatR)
+Hierarchical_2 <- function(data, S, delta) {
+  
+  # Starting value of sigma2
+  
+  sv_j <- as.vector(tapply(food1$Total_emissions, food1$Group, var))
+  sigma2_j <- sv_j
+  
+  # Prior on sigma2_j
+  
+  alpha <- (mean(sv_j)^2)/var(sv_j)
+  beta <- mean(sv_j)/var(sv_j)
+  
+  # Prior on alpha and beta
+  
+  a <- b <- 1
+  c <- d <- 1
+  
+  # Prior tau_sq
+  
+  eta0 <- 1
+  tau02 <- 100
+  
+  # Prior on mu
+  
+  mu0 <- 12
+  g02 <- 6^2
+  
+  # Prior on theta ****
+  theta <- y_bar
+  
+  mu <- mean(y_bar)
+  tau_sq <- var(y_bar)
+  
+  
+  nj <- as.vector(table(food1$Group))
+  m <- length(nj)
+  
+  
+  Theta_post_H2 <- matrix(NA, S, m)
+  Sigma_post_H2 <- matrix(NA, S, m)
+  MuTaAlBet <- matrix(NA, S, 4)
+  accept <- NULL
+  
+  for(s in 1:S) {
+    # 1. Sample mu
+    mean_2 <- (1/g02 * mu0 + m/tau_sq * mean(theta))/(1/g02 + m/tau_sq)
+    var_2 <- (1/g02 + m/tau_sq)^(-1)
+    mu <- rnorm(1, mean_2, sqrt(var_2))
+  
+  
+    # 2. Sample tau_sq
+    alpha_2 <- (eta0+m)
+    beta_2 <- eta0 + sum((theta - mu)^2)
+  
+    tau_sq <- 1/rgamma(1, alpha_2/2, beta_2/2)
+  
+  
+  
+    # 3. Draw theta
+  
+    for (j in 1:m) {
+      mean_1 <- (mu*(1/tau_sq) + y_bar[j]* 
+                   (nj[j]/sigma2_j[j]))/((1/tau_sq)+ (nj[j]/sigma2_j[j]))
+      var_1 <- ((1/tau_sq) + (nj[j]/sigma2_j[j]))^(-1)
+      theta[j] <- rnorm(1, mean_1, sqrt(var_1))
+    }
+    Theta_post_H2[s,] <- theta
+  
+    # 4. Draw beta
+  
+    c_star <- m*alpha + c
+    d_star <- sum(1/sigma2_j) + d
+    beta <- rgamma(1, c_star, d_star)
+  
+    # 5. Draw alpha
+  
+    alpha.star = propose.alpha.star(alpha, delta)
+    
+    
+    r = full.cond.alpha(alpha.star, beta, a, b, prod.prec, m)/ 
+      full.cond.alpha(alpha, beta, a, b, prod.prec, m) *
+      dgamma(alpha, alpha.star*delta, delta) / 
+      dgamma(alpha.star, alpha*delta, delta)
+    
+    u = runif(1)
+    
+    if(u < r){
+      alpha = alpha.star
+      accept[s] <- 1
+    }
+    else{accept[s] <- 0}
+  
+    MuTaAlBet[s,] <- c(mu, tau_sq, alpha, beta)
+    
+    # 6. Draw sigma2_j
+  
+    for(j in 1:m) {
+    
+      beta_fc <- (sum((food1$Total_emissions[food1$Group == j] - 
+                         theta[j])^2))/2 + beta
+      alpha_fc <- nj[j]/2 + alpha
+      sigma2_j[j] <- 1/rgamma(1, alpha_fc, beta_fc)
+    }
+    Sigma_post_H2[s,] <- sigma2_j
+  }
+  
+  return(list(Theta_post_H2 = Theta_post_H2, 
+              MuTaAlBet = MuTaAlBet,
+              Sigma_post_H2 = Sigma_post_H2,
+              accept = accept))
+
+}
+```
+
+
+We now run the function for `25000` iterations to be able to perform thinning if necessary. Results are stored in a list to be accessible as matrices.
+
+* `Theta_post_H2` is the matrix of draws from the posterior of $\theta_j$, 
+$$p(\theta_j^{(s)} |y_{1,j}, ... , y_{nj,j}, \sigma^{2(s-1)}_j) = N \left( \frac{n_j\bar{y_j}/\sigma^{2(s-1)}_j + \mu^{(s)}/\tau^{2(s)}}{n_j/\sigma^{2(s-1)}_j + 1/\tau^{2(s)}}, \ (n_j/\sigma^{2(s-1)}_j + 1/\tau^{2(s)})^{-1} \right)$$
+
+* `MuTaAlBet` is the matrix of draws of $\mu$, $\tau^2$, $\alpha$ and $\beta$ each from its posterior and full conditional respectively.
+
+* `Sigma_post_H2` is the matrix containing draws of $\sigma^2_j$ from its full conditional
+\[
+p(1/\sigma^{2(s)}_j|\theta_j^{(s)}, \alpha^{(s)}, \beta^{(s)}, \mathbf{y}) = Gamma\left(\frac{nj}{2}+ \alpha^{(s)}, \quad \frac{\sum^{nj}_{i=1} (y_{ij}-\theta_j^{(s)})^2}{2} +\beta^{(s)} \right)
+\]
+
+```{r}
+Out <- Hierarchical_2(food1, 25000, 20)
+Theta_post_H2 <- Out$Theta_post_H2
+MuTaAlBet <- Out$MuTaAlBet
+Sigma_post_H2 <- Out$Sigma_post_H2
+accept <- Out$accept
+prop <- round(mean(accept),2)*100
+```
+
+In the function `Hierarchical_2` we also stored the proportion of accepted values of $\alpha$ in the Metropolis Hastings step, to be able to tune $\delta$ accordingly. \hfill\break
+After tuning, we set $\delta = 20$, a good value which allows for a `r toString(prop)`% acceptance rate of $\alpha$.
+
+To analyze the output of our algorithm we have drawn some plots
+```{r}
+# Plot
+# MuTaAlBet
+S <- 25000
+par(mfrow = c(2,2))
+for (i in 1:4) {
+  plot(1:S, MuTaAlBet[,i], type = "l", xlim = c(0, 2000),col="deepskyblue4")
+  abline(h = mean(MuTaAlBet[,i]),col="chocolate3", lwd=0.8 )
+  mode_1 <- density(MuTaAlBet[,i])$x[which.max(density(MuTaAlBet[,i])$y)]
+  abline(h = mode_1,col="darkolivegreen1", lwd=0.8 )
+}
+```
+
+Above are the traceplots of $\mu$, $\tau^2$, $\alpha$, $\beta$ respectively. There seems to be no issues with them but we proceed anyway in checking the autocorrelation functions (acf from here on) plots to be sure there is no autocorrelation.
+
+```{r}
+par(mfrow = c(2,2))
+for(i in 1:4) {
+  acf(MuTaAlBet[,i], 100, main = "")
+}
+```
+
+Unfortunately all four the parameters present us with a quite slowly decreasing acf, we should thin their chains to try to reduce autocorrelation.
+
+```{r}
+S = 25000
+Theta_post_H2_T <- Theta_post_H2[seq(1,S, by = 5),]
+MuTaAlBet_T <- MuTaAlBet[seq(1,S, by = 5),]
+Sigma_post_H2_T <- Sigma_post_H2[seq(1,S, by = 5),]
+```
+
+After thinning the output by 5 observations, i.e., keeping just one observation in five, we can check again the acf plots
+```{r}
+par(mfrow = c(2,2))
+for(i in 1:4) {
+  acf(MuTaAlBet_T[,i], 100, main = "")
+}
+```
+
+The picture has greatly improved: the acf's shrinks much faster than before.
+
+We can now take a look at the histograms of the approximated posterior distribution of $\theta_j$
+```{r}
+# Theta_post_H2_T
+par(mfrow = c(2,2))
+idx <- c(1,3,7,9)
+for(i in idx) {
+  hist(Theta_post_H2_T[,i], breaks = 100, col = "aquamarine3", 
+       border = "deepskyblue4", main = "")
+  abline(v = y_bar[i] ,col="chocolate3", lwd=2 )
+  mode_1 <- density(Theta_post_H2_T[,i])$x[which.max(density(Theta_post_H2_T[,i])$y)]
+  abline(v = mode_1,col="darkolivegreen1", lwd=2 )
+  abline(v = apply(Theta_post_H2_T, 2, quantile, 0.05)[i], lty = 2)
+  abline(v = apply(Theta_post_H2_T, 2, quantile, 0.95)[i], lty = 2)
+}
+```
+
+These are the histograms of the first, third, seventh and ninth group, plotted along with group's sample mean and approximated posterior mode (orange and green lines respectively). \hfill\break
+From the picture we can notice that the first, third and last group histograms are fairly concentrated around the sample mean value whereas the seventh group, that of meat, has quite a far distribution with respect to its sample mean.
+This is because allowing each group having its own variance changes the posterior parameters of $\theta_j$ this way
+$$\mu_n= \frac{n_j\bar{y_j}/\sigma^{2(s-1)}_j + \mu^{(s)}/\tau^{2(s)}}{n_j/\sigma^{2(s-1)}_j + 1/\tau^{2(s)}}$$
+$$\tau_n^2= (n_j/\sigma^{2(s-1)}_j + 1/\tau^{2(s)})^{-1} $$
+
+so the posterior expectation is a weighted average between the sample mean $\bar{y_j}$ and the sampled value of $\mu^{(s)}$, whom we assigned weakly informative prior parameters.
+So the sampled value $\mu^{(s)}$ will be around its posterior expectation $\rho_n = \frac{\mu_0/\gamma_0 \ + \ m/\tau^2\mathbb{E}(\bar{y_j})}{1/\gamma_0 \ + \ m/\tau_0^2}$ = `r toString(mean(MuTaAlBet_T[,1]))`, even lower than the initial value $\mu_0 = 12$.
+
+```{r}
+{plot(density(MuTaAlBet_T[,1]), col = "aquamarine3", 
+     border = "deepskyblue4", type = "l", xlim = c(0,25), lwd = 2,
+     main = "")
+lines(seq(0, 25, by = 0.01), dnorm(seq(0, 25, by = 0.01), 12, 6), 
+      col = "darkolivegreen3", lwd = 2)
+legend("topright", legend = c("prior", "posterior"),
+       col = c("darkolivegreen3","aquamarine3"), lwd = c(2,2))}
+post_mean_H2 <- apply(Theta_post_H2_T, 2, mean)
+knitr::kable(rbind(Post_Exp = post_mean_H2[idx], S2 = sv_j[idx]))
+```
+
+Because of this the posterior expectation $\mu_n$ of high sample variance $S_j^2$ groups gets drawn towards $\mu^{(s)}$, weighting less the sample mean $\bar{y_j}$. \hfill\break
+Indeed the drawn value $\sigma^{2(s-1)}_j$ is also from a weakly-informative full conditional and so will reflect the data information (i.e. the sample variance $S_j^2$).
+
+To check this last fact we can look at draws of $\sigma_j^2$ from its full conditional.
+```{r}
+# Sigma_post_H2
+par(mfrow = c(2,2))
+
+# sigma2_j 1
+hist(Sigma_post_H2[,1], breaks = 500, col = "aquamarine3", 
+     border = "deepskyblue4", xlim = c(0,20), main = "")
+abline(v = mean(Sigma_post_H2[,1]),col="chocolate3", lwd=3 )
+mode_1 <- density(Sigma_post_H2[,1])$x[which.max(density(Sigma_post_H2[,1])$y)]
+abline(v = mode_1,col="darkolivegreen1", lwd=3 )
+# sigma2_j 3
+hist(Sigma_post_H2[,3], breaks = 500, col = "aquamarine3", 
+     border = "deepskyblue4", xlim = c(0,50), main = "")
+abline(v = mean(Sigma_post_H2[,3]),col="chocolate3", lwd=3 )
+mode_1 <- density(Sigma_post_H2[,3])$x[which.max(density(Sigma_post_H2[,3])$y)]
+abline(v = mode_1,col="darkolivegreen1", lwd=3 )
+# sigma2_j 7
+hist(Sigma_post_H2[,7], breaks = 1000, col = "aquamarine3", 
+     border = "deepskyblue4", xlim = c(0,5000), main = "")
+abline(v = mean(Sigma_post_H2[,7]),col="chocolate3", lwd=3 )
+mode_1 <- density(Sigma_post_H2[,7])$x[which.max(density(Sigma_post_H2[,7])$y)]
+abline(v = mode_1,col="darkolivegreen1", lwd=3 )
+# sigma2_j 9
+hist(Sigma_post_H2[,9], breaks = 1000, col = "aquamarine3", 
+     border = "deepskyblue4", xlim = c(0,200), main = "")
+abline(v = mean(Sigma_post_H2[,9]),col="chocolate3", lwd=3 )
+mode_1 <- density(Sigma_post_H2[,9])$x[which.max(density(Sigma_post_H2[,9])$y)]
+abline(v = mode_1,col="darkolivegreen1", lwd=3 )
+sv_j[idx]
+```
+
+From these histograms and the sample variances $S_j^2$ printed with them, we can clearly see how even if we have randomness we can state with a high degree of confidence that $\mu_n$ of high sample variance groups weight less $\bar{y_j}$ than small sample variance groups. \hfill\break
+This fact can be noticed even looking at the plot of the empirical posterior expectation of $\sigma_j^2$ vs. the shrinkage where the difference between $\mu_n$ and $\bar{y_j}$ grows with variance
+
+```{r}
+{plot(log(apply(Sigma_post_H2_T, 2, mean)), (y_bar - post_mean_H2))
+for(i in 1:m) {
+  if(i == 7){
+    text(log(apply(Sigma_post_H2_T, 2, mean))[i], (y_bar - post_mean_H2)[i]-0.8, labels = i)
+  }
+  else{
+    text(log(apply(Sigma_post_H2_T, 2, mean))[i], (y_bar - post_mean_H2)[i]+0.8, labels = i)
+    }
+}
+abline(h = 0, col="darkred")}
+```
+
+### Prior vs. posterior plots
+```{r}
+# Prior vs. posterior plots
+
+Theta_marg_H2 = marginal_prior_H1H2(N = 5000) # draws from the marginal prior
+# of theta_j
+par(mfrow = c(2,2))
+for(j in idx){
+  plot(density(Theta_post_H2_T[,j],adj=2),main="", 
+       xlab=expression(theta[j]), ylab="density",lwd=2, col="darkgreen")
+  
+  lines(density(Theta_marg_H2[,j], adj = 2),
+        lwd=2, col="darkolivegreen3")
+  legend("topleft",legend=c("posterior","prior"),lwd=c(2,2),
+         col=c("darkgreen","darkolivegreen3"),bty="n")
+}
+```
+
+Here the priors of $\theta_j$ are drawn using the `marginal_prior_H1H2` function, which samples from priors of hyperparameters of $\theta_j$
+
+* $$p(\mu|\mu_0, \gamma_0^2) = N(\mu_0, \gamma_0^2)$$
+
+* $$p(\tau^{2(s)}|\eta_0, \tau_0^2) = I-Gamma(\eta_0, \tau_0^2)$$
+
+So as prior we plot the functions
+$$p(\theta_j|\mu^{(s)}, \tau^{2(s)}) = N(\mu^{(s)}, \tau^{2(s)})$$
+
+### Boxplot of posterior draws of $\theta_j$
+
+```{r}
+## boxplot
+
+boxplot(Theta_post_H2_T,
+        main = expression(paste("H2 Posterior on ",theta[j])),
+        col = my_col, xlab = "Groups",
+        ylab= "")
+title(ylab = expression(paste("p(",theta[j], "|", mu,",", sigma^2, ",",
+                              italic(y[1]),"...",italic(y[m]),")") ),
+      mgp = c(2,1,0))
+library(plotrix)
+draw.circle(7, 4, 0.5, border = "red", lwd = 2)
+```
+
+In this boxplot, as opposite to the one of the previous model, it is clear how each group features its unique variance as from prior assumptions. \hfill\break
+As said before though high variance groups are all drawn towards to the sampled $\mu^{(s)}$'s.
+
+
+### Shrinkage
+
+Can now check for shrinkage effect in the model. \hfill\break
+Shrinkage effect happens when the posterior mean borrows from the overall average of group means more information than it does from group's sample means as said before. This is due to two issues in our case:
+
+1. Small group sample size $nj$
+
+2. High group variance $\sigma_j^2$
+
+
+To better understand the effect can draw some plots
+
+```{r}
+par(mfrow = c(1,3))
+plot(y_bar, post_mean_H2)
+for(i in 1:m) {
+  if(i == 4 | i == 7) {
+    text(y_bar[i], post_mean_H2[i]+0.2, labels = i)  
+  }
+  else {
+    text(y_bar[i]+1, post_mean_H2[i], labels = i)
+  }
+}
+abline(0, 1, col="darkred")
+
+
+plot(nj, (y_bar - post_mean_H2))
+for(i in 1:m) {
+  if(i == 4 | i == 2) {
+    text(nj[i]-0.2, (y_bar - post_mean_H2)[i], labels = i)
+  }
+  else {
+    text(nj[i]+0.4, (y_bar - post_mean_H2)[i], labels = i)
+  }
+}
+abline(h = 0, col="darkred")
+
+
+plot(log(sv_j), (y_bar - post_mean_H2))
+for(i in 1:m) {
+  if(i == 7){
+    text(log(sv_j)[i], (y_bar - post_mean_H2)[i]-0.8, labels = i)
+  }
+  else{
+    text(log(sv_j)[i], (y_bar - post_mean_H2)[i]+0.8, labels = i)
+    }
+}
+abline(h = 0, col="darkred")
+```
+
+From these plots we can notice that in this case the shrinkage might be caused by both issues. Indeed we have a small sample size for all groups, but some are even more disadvantaged than others having as low as $2$ observations. \hfill\break
+The second plot shows the shrinkage for issue (1). In our case the sample size does not seem to be the problem by itself, rather combined with the high group variance. 
+The third plot instead shows the relation between shrinkage and sample variance. The shrinkage is higher where sample variance is higher. \hfill\break
+Can notice how similar this last plot is to the one above which instead of sample variances was plotting approximated posterior means of $\sigma_j^2$.
+
+### Final plots
+
+We can compute empirical credible intervals using the empirical distribution of $\theta_j$
+```{r}
+# Table for theta
+res_H2   = matrix(NA, 9, 3)
+rownames(res_H2) <- 1:9
+colnames(res_H2) <- c("LB_90%_CrI", "UB_90%_CrI", "Post_Exp_theta_j")
+
+res_H2[,1] <- apply(Theta_post_H2_T, 2, quantile, 0.05)
+res_H2[,2] <- apply(Theta_post_H2_T, 2, quantile, 0.95)
+res_H2[,3] <- post_mean_H2
+knitr::kable(res_H2)
+```
+
+In the last column we see the approximation (by the Law of Large Numbers) of the posterior mean of $\theta_j$. It is interesting to also take a look at the order of the approximated posterior means
+```{r}
+cbind(order(y_bar), order(res_H2[,3]))
+```
+as we can see the order is quite different from the one of the sample means we took as benchmark.
+
+### Prediction
+
+Can now procede to make prediction. Here below we compute both
+
+* $p(\theta_7 > \theta_j) \qquad \forall j\neq7$ \
+probability that the mean of group seven is greater than the mean of group $j$.
+
+* $p(y_7^* > y_j^*) \qquad \forall j\neq7$ \
+probability that a new value drawn from the seventh group's population is greater than a new value sampled from the $j-th$ group's population.
+
+```{r}
+prob_H2 <- NULL
+pred_H2 <- NULL
+
+
+
+for (j in 1:m){
+  if (j != 7){
+    prob_H2 <- c(prob_H2, mean(Theta_post_H2_T[,7]>Theta_post_H2_T[,j]))
+    pred_H2 <- c(pred_H2, mean(rnorm(5000, Theta_post_H2_T[,7], sqrt(Sigma_post_H2_T[,7])) >
+                                 rnorm(5000, Theta_post_H2_T[,j], sqrt(Sigma_post_H2_T[,j]))) )
+  }
+}
+res_P <- cbind(prob_H2, pred_H2)
+
+colnames(res_P) <- c("P(Theta_7 > Theta_j)", "P(Y*_7 > Y*_j)")
+knitr::kable(res_P)
+```
+as can be noticed from the table above the results are quite heterogeneous in the first column. This can be traced back to the shrinkage effect which makes the posterior expectation of the meat group decrease. \hfill\break
+Even though the probabilities seem lower, in the second column they are much more homogeneous, because they depend on draws from the posterior predictive $p(Y^*|\mathbf{Y})$ computed as follows
+\begin{gather}
+p(Y^*|\mathbf{Y}) \nonumber \\
+= \int p(\boldsymbol{\theta}, \boldsymbol{\sigma^2}, y^*| \mathbf{y}) d\boldsymbol{\theta} d\boldsymbol{\sigma^2} \nonumber \\
+= \int p(y^*|\boldsymbol{\theta}, \boldsymbol{\sigma^2},\mathbf{y})p(\boldsymbol{\theta}, \boldsymbol{\sigma^2}| \mathbf{y})d\boldsymbol{\theta} d\boldsymbol{\sigma^2} \nonumber \\
+\text{due to} \quad y^* \bot \mathbf{y} | \boldsymbol{\theta},\boldsymbol{\sigma^2} \nonumber \\
+= \int p(y^*|\boldsymbol{\theta}, \boldsymbol{\sigma^2})p(\boldsymbol{\theta}, \boldsymbol{\sigma^2}| \mathbf{y})d\boldsymbol{\theta} d\boldsymbol{\sigma^2} \nonumber
+\end{gather}
+
+Hence to sample values of $(\boldsymbol{\theta},\boldsymbol{\sigma^2}, y^*)$ can
+\begin{enumerate}
+\item sample $\theta_j^{(s)}$ from $p(\theta_j^{(s)} |y_{1,j}, ... , y_{nj,j}, \sigma^{2(s-1)}_j)$
+\item sample $\sigma_j^{2(s)}$ from $p(1/\sigma^{2(s)}_j|\theta_j^{(s)}, \mathbf{y})$
+\item sample $y^{*(s)}$ from $p(y^*|\theta_j^{(s)}, \sigma_j^{2(s)}) = N(\theta_j^{(s)}, \sigma_j^{2(s)})$
+\end{enumerate}
+
+## Model Checking
+
+We can perform model checking on this model as well.\hfill\break
+Even in this case we chose as statistic to make comparison the expected value. \hfill\break
+Let's compute it on $100$ draws of $y^*$ from the posterior predictive per sampled value of $\theta_j$ and $\sigma_j^2$ and store its value in the matrix `T_mc_H2`.
+```{r}
+T_mc_H2 <- matrix(NA, 5000, m)
+
+for (j in 1:m){
+  for (i in 1:5000){
+    
+    y_star = rnorm(100, Theta_post_H2_T[i,j], Sigma_post_H2_T[i,j])
+    T_mc_H2[i,j] = mean(y_star)
+  }
+}
+```
+
+
+The values of the statistic `T_mc_H2` can be used as empirical distribution. \hfill\break
+For each $\bar{y_j}$ we will check where it lies in this empirical distribution using the help of empirical confidence interval.
+```{r}
+res_mod_check_H2 = matrix(NA, m, 3)
+colnames(res_mod_check_H2) <-c("90% LB", "90% UB", "y_bar")
+res_mod_check_H2[,1] <- apply(T_mc_H2, 2, quantile, 0.05)
+res_mod_check_H2[,2] <- apply(T_mc_H2, 2, quantile, 0.95)
+res_mod_check_H2[,3] <- y_bar
+
+knitr::kable(res_mod_check_H2)
+```
+
+Can even plot the results to have a visual idea of model checking
+```{r}
+par(mfrow = c(2,2))
+for(i in idx) {
+  if(i == 7){
+    hist(T_mc_H2[,i], breaks = 1000, col = "chartreuse2", 
+         border = "chartreuse4", 
+         xlim = c(res_mod_check_H2[i,1],res_mod_check_H2[i,2]))
+    abline(v = y_bar[i],col="darkorange", lwd=3 )
+    abline(v = res_mod_check_H2[i,1], col ="darkorange4", lty=2)
+    abline(v = res_mod_check_H2[i,2], col ="darkorange4", lty=2)
+  }
+  else{
+    hist(T_mc_H2[,i], breaks = 100, col = "chartreuse2", 
+       border = "chartreuse4", 
+       xlim = c(mean(T_mc_H2[,i])-mean(Sigma_post_H2_T[,i]),
+                mean(T_mc_H2[,i])+mean(Sigma_post_H2_T[,i])))
+    abline(v = y_bar[i],col="darkorange", lwd=3 )
+    abline(v = res_mod_check_H2[i,1], col ="darkorange4", lty=2)
+    abline(v = res_mod_check_H2[i,2], col ="darkorange4", lty=2)
+    }
+}
+```
+
+As we can see all four the empirical distributions are more or less centered around the sample mean, meaning that the chosen model is a fairly good model for our data, and that the samples we have for these groups are between the most likely we could get (are not "unusual").
+
+
+# Hierarchical model 3
+
+The strength of previous model was the fact that we have taken into account the difference in terms of within groups sample variances. But this assumption, although being correct, has led to a posterior expectation of $\theta_7$ (meat group) much lower than what data suggested. This was connected to the fact that for groups having high $s^2_j$ the posterior expectation was drawn to $\mu$.
+A solution to this issue would be to model $\theta_j$  conditionally on $\sigma^2_j$. 
+
+Indeed, we are going to consider $\theta_1|\sigma^2_1,..,\theta_9|\sigma^2_9$, i.e. we let the distribution of each $\theta_j, \ for \ j=1,..,m$ vary accordingly to the variance of the $jth$ group. This means that we expect that groups having low variability, will lead to a distribution for $\theta_j$ (average level of $CO2$ emission) that vary less than groups having big variability.
+
+More specifically we are assuming: 
+\begin{enumerate}
+  \item $Y_{1:n_j} | \theta_j, \sigma^2_j \sim N(\theta_j, \sigma^2_j) \rightarrow$ we assume that the units inside each group follow a Normal distribution centered around $\theta_j$ (mean of group $j$) and having variance $\sigma^2_j$ (variance of group $j$).
+  \item $\theta_j|\sigma^2_j \sim N\left(\mu, \frac{\sigma^2_j}{\kappa_0}\right) \rightarrow$ all the $\theta_j$ follow a Normal distribution centered at the same value $\mu$, but each of them vary accordingly to the group's variance. Hence we are assuming that they are \textbf{independent} (their joint distribution is factorized as a product), but they are \textbf{not identically distributed}, since their variance is specific for each group. 
+  \item $\sigma^2_j| \alpha, \beta \sim I-Gamma (\alpha, \beta) \rightarrow$ this distribution represents the variability of the groups' variances
+\end{enumerate}
+
+We put a prior on: 
+\begin{enumerate}
+  \item $\mu$: $\mu| \mu_0, \tau_0^2 \sim N \left( \mu_0, \tau_0^2 \right) \rightarrow$ We are assuming that the mean of $\theta_j$ (i.e. average of group means) comes from a Normal. This population represents the hetereogenity of the groups' means.
+  \item $\alpha$: $\alpha| a, b \sim Gamma(a,b) \rightarrow$ this prior is \textbf{not conjugate:} we need to implement a Metropolis Hastings algorithm in order to draw $\alpha$ from $p(\alpha|a,b,\sigma^2_j)$
+  \item $\beta$: $\beta|c,d \sim Gamma(c,d) \rightarrow$ this is a semi - conjugate prior
+\end{enumerate}
+
+In the following we are going to derive the full conditional distributions for each parameter in order to use them into the \textbf{MCMC algorithm.} We have already stated that the MCMC algorithm will include steps of Gibbs sampling (for the semi-conjugate distributions) and of Metropolis Hastings  (for non conjugate distributions).
+
+## Posterior for $\boldsymbol{\theta_j, \sigma^2_j}$
+
+
+Accordingly to our model specification we have that:
+\begin{itemize}
+  \item \textbf{Likelihood}:$$ Y_{1:n_j}| \theta_j, \sigma^2_j \sim N (\theta_j, \sigma^2_j)$$
+  \item \textbf{Joint prior on $(\theta_j, \sigma^2_j)$}: $$p(\theta_j, \sigma^2_j) = p(\theta_j| \sigma^2_j) \cdot p(\sigma^2_j)$$
+  \item \textbf{Joint posterior for $(\theta_j, \sigma^2_j)$}:$$p(\theta_j, \sigma^2_j | y_{1:n_j}) = p(\theta_j| \sigma^2_j, y_{1:n_j}) \cdot p(\sigma^2_j| y_{1:n_j})$$ 
+\end{itemize}
+
+Let us look more closely at the Joint posterior. 
+The first term is the \textbf{Posterior conditional distribution of $\theta_j$ on $\sigma^2_j$}. This posterior can be derived simply by observing that it can be written as: 
+$$p(\theta_j| \sigma^2_j, y_{1:n_j}) \propto p(y_{1:n_j}| \theta_j, \sigma^2_j) \cdot p(\theta_j| \sigma^2_j)$$
+We have a Normal likelihood having a prior on $\theta_j$ (the mean) which is again normal. Hence we know that the posterior $p(\theta_j| \sigma^2_j, y_{1:n_j}) \sim N(\theta_{nj}, \sigma^2_j/\kappa_n)$, where:
+\begin{itemize}
+  \item $\kappa_n = \kappa_0 + n_j$
+  \item $\theta_{nj} =\frac{(\kappa_0/\sigma^2_j)\mu + (n_j/\sigma^2_j)\bar{y_j}}{\kappa_0/\sigma^2_j + n_j/\sigma^2_j} = \frac{\kappa_0 \mu + n_j \bar{y}_j}{\kappa_n}$. We observe that the posterior expectation does not depend on $\sigma^2_j$ anymore. Hence we have deleted the undesired effect of the second model on posterior expectation, for which groups having high $s^2_j$ had their posterior expectation drawn to $\mu$. 
+\end{itemize}
+
+The last consideration that we can anticipate is that we have given a value to $\kappa_0 = 0.1$. We know that by letting $\kappa_0 \rightarrow 0$ we will obtain a non informative prior distribution; in this setting our full conditional of $\theta_j$ would get quite similar to $N \left(\bar{y_j}, \frac{\sigma^2_j}{n_j} \right)$. This result seems to be quite close to the frequentist approximated distribution of the sample mean: $\bar{y_j} \sim N \left(\theta_{0j},\frac{\sigma^2_j}{n_j} \right)$. In reality, these two results are quite different. Under Bayesian framework we get a distribution for the population parameter centered around the sample mean and having variance equal to the MLE variance; on the contrary in the frequentist framework we have a distribution for the sample mean (its randomness comes from data under repeated sampling) centered around the unknown parameter which is thought to be fixed. 
+
+We can now proceed by looking at the second term \textbf{Marginal posterior of $\sigma^2_j$}: 
+
+$$p(\sigma^2_j| y_{1:n_j}) \propto p(y_{1:n_j}| \sigma^2_j) \cdot p(\sigma^2_j)$$
+This posterior is a bit more difficult to be derived. Indeed we have the product between the marginal likelihood and the prior on $\sigma^2_j$. 
+From the theory we know that $p(y_{1:n_j}| \sigma^2_j) = \int p( y_{1:n_j}| \theta_j, \sigma^2_j) p(\theta_j|\sigma^2_j) d\theta_j =... \propto \left(\frac{1}{\sigma^2_j} \right)^{n/2} exp \{- \frac{1}{2 \sigma^2_j} \left[(n-1) s^2 + \frac{n \kappa_0}{\kappa_n}(\bar{y}- \mu)^2 \right] \}$
+
+Hence we can write the marginal posterior as it follows: 
+\begin{gather}
+p(\sigma^2_j| \mathbf{y}) \propto \left(\frac{1}{\sigma^2_j} \right)^{n_j/2} exp \{- \frac{1}{2 \sigma^2_j} \left[(n_j-1) s_j^2 + \frac{n \kappa_0}{\kappa_n}(\bar{y_j}- \mu)^2 \right] \} \left(\frac{1}{\sigma_j^2} \right)^{\alpha+1} exp \{ - \beta \frac{1}{\sigma^2_j}\} = \nonumber \\
+\left(\frac{1}{\sigma^2_j} \right)^{n_j/2 + \alpha + 1} exp \{- \frac{1}{\sigma^2_j} \left[\frac{(n_j-1)}{2}s^2_j + \frac{n_j \kappa_0}{2 \kappa_n} (\bar{y_j}- \mu^2) + \beta) \right] \}
+\end{gather}
+
+The last expression is the kernel of an inverse Gamma. Hence we have shown that: 
+$$\sigma^2_j| \mathbf{y} \sim I- Gamma \left(n_j/2 + \alpha,\left[\frac{(n_j-1)}{2}s_j^2 + \frac{n_j \kappa_0}{2 \kappa_n} (\bar{y_j}- \mu^2) + \beta) \right]   \right)$$
+
+We have to notice that the distribution of $\sigma^2_j|\mathbf{y}$, does depend on $\alpha$ and $\beta$ as well. $\alpha$ and $\beta$ are also random, hence it is more correct to write $\sigma^2_j|\mathbf{y}, \alpha, \beta$. Indeed We are going to sample $\alpha, \beta$ from two Gammas both having in common the fact of being weakly informative, hence posterior information of $\sigma^2_j$ will be mostly taken from data. 
+The second posterior hyperparameter can be seen as a mixture of elements coming from prior (negligible since we have been weakly informative) and data; in particular $\frac{n_j \kappa_0}{2 \kappa_n} (\bar{y_j}- \mu^2)$ represents the discrepancy between what data of the $jth$  group suggest on $\theta_j$ and $\mu$, the value sampled at each iteration from its posterior distribution which should represent a sort of *overall mean*. However, since we set $\kappa_0 = 0.1$ this term should not weight too much. Indeed, we expect the sampled values of $\sigma^{2(s)}_j$ to be representative of what we have observed in our dataset.. \hfill\break
+
+
+In practice to get draws from the joint posterior of $(\theta_j, \sigma^2_j)$ we need to implement the following Monte Carlo procedure:
+
+$\forall s=1,..,S$: 
+\begin{enumerate}
+  \item Draw $\sigma^{2(s)}_j$ from: $I- Gamma \left(n_j/2 + \alpha,\left[\frac{(n_j-1)}{2}s_j^2 + \frac{n_j \kappa_0}{2 \kappa_n} (\bar{y_j}- \mu^2) + \beta) \right]   \right)$. Notice that both $\alpha, \beta$ are random, hence the posterior distribution of $\sigma^2_j$ is conditional also on $\alpha, \beta$, as it will be clarified later on. 
+   \item Draw $\theta_j$ from: $Normal(\theta_{nj}, \sigma^{2(s)}_j/\kappa_n)$
+\end{enumerate}
+
+
+Hence each $\theta^{(s)}_j$ is sampled from its posterior conditional distribution given the data and $\sigma^2_j = \sigma_j^{2(s)}$.  In particular, $\sigma^{2(s)}_j$ will be plugged in the expression of the posterior variance of $\theta_j$. Having been a priori weakly informative on $\sigma^2_j$ we expect data carrying a lot of information. Hence we will obtain posterior distributions on $\theta_j$ that vary similarly to the sample variances of each group: posterior distributions will be more concentrated for $\theta_j$ referring to groups whose variability is low, on the contrary we will get  spread posterior for $\theta_j$ referring to groups having high variance.
+
+
+## Full conditional distribution of $\mu$
+
+We now want to derive the posterior distribution on $\mu$:
+$$p(\mu| \boldsymbol{\theta}, \boldsymbol{\sigma^2}, \mu_0, \tau_0) \propto p(\boldsymbol{\theta} | \mu,\boldsymbol{\sigma^2} ) \cdot p(\mu) $$
+The second term is the prior on $\mu$, whereas the first term is the "likelihood" (*joint distribution*) of $\boldsymbol \theta = (\theta_1,.., \theta_9)$, which we know to be independent but not identically distributed. 
+
+
+We can derive $p(\boldsymbol{\theta} | \mu,\boldsymbol{\sigma^2} )$ as it follows: 
+
+\begin{gather}
+p(\boldsymbol{\theta} | \mu,\boldsymbol{\sigma^2} )=\prod_{j=1}^m N(\mu, \frac{\sigma^2_j}{\kappa_0}) = \nonumber \\
+=\prod_{j=1}^m \frac{1}{\sqrt{2 \pi \sigma^2_j/ \kappa_0}} exp\{ -\frac{\kappa_0}{2\sigma^2_j} (\theta_j - \mu)^2\} = \nonumber \\
+= \left(\frac{1}{\sqrt{2 \pi}}\right)^m \prod_{j=1}^m \frac{\sqrt{\kappa_0}}{ \sigma_j} \cdot exp \{ \sum_{j=1}^m \left[- \frac{\kappa_0}{2 \sigma^2_j}(\theta_j - \mu)^2 \right] \} \nonumber \\
+\end{gather}
+
+Hence we can derive the full conditional of $\mu$:
+\begin{gather}
+p(\mu| \boldsymbol{\theta}, \boldsymbol{\sigma^2}, \mu_0, \tau_0) \propto p(\boldsymbol{\theta} | \mu,\boldsymbol{\sigma^2} ) \cdot p(\mu) \propto \nonumber \\
+exp \{\sum_{j=1}^m \left[ - \frac{\kappa_0}{2 \sigma^2_j} (\theta_j - \mu)^2 \right]  \} \cdot exp \{- \frac{1}{2 \tau_0^2} (\mu- \mu_0)^2\} \propto \nonumber \\
+exp\{ \sum_{j=1}^m - \frac{\kappa_0}{2 \sigma^2_j}\left[ \theta^2_j - 2 \theta_j\mu+\mu^2 \right]\} \cdot exp \{- \frac{1}{2 \tau_o^2} \left[ \mu^2 + \mu_0^2 - 2 \mu \mu_0  \right] \} \propto \nonumber \\
+exp\{ \sum_{j=1}^m - \frac{\kappa_0 \theta_j^2}{2 \sigma^2_j} - 2 \mu \sum_{j=1}^m - \frac{\kappa_0 \theta_j}{2 \sigma^2_j} + \mu^2 \sum_{j=1}^m -\frac{\kappa_0}{2 \sigma^2_j} -\frac{1}{2 \tau_0^2}[ \mu^2 - 2 \mu \mu_0] \} \propto \nonumber \\
+exp\{ -\mu \sum_{j=1}^m - \frac{\kappa_0 \theta_j}{ \sigma^2_j} + \mu^2 \sum_{j=1}^m - \frac{\kappa_0}{2 \sigma^2_j}  -\frac{1}{2 \tau_0^2}[ \mu^2 - 2 \mu \mu_0] \} \nonumber \\
+exp \{- \frac{1}{2} \left[2 \mu  \sum_{j=1}^m - \frac{\kappa_0\theta_j}{ \sigma^2_j}+ \mu^2 \sum_{j=1}^m  \frac{\kappa_0}{\sigma^2_j} +\frac{1}{ \tau_0^2} \mu^2 - \frac{2 \mu \mu_0}{\tau_0^2}\right] \} = \nonumber \\
+exp \{-\frac{1}{2} \left[ -2 \mu \left(\sum_{j=1}^m \frac{\kappa_0 \theta_j}{\sigma^2_j} + \frac{\mu_0}{\tau_0^2} \right) + \mu^2 \left( \sum_{j=1}^m \frac{\kappa_0}{\sigma^2_j} + \frac{1}{\tau_0^2}\right)\right] \} \nonumber \\
+\end{gather}
+From the last line let us call:
+$$a = \left( \sum_{j=1}^m \frac{\kappa_0}{\sigma^2_j} + \frac{1}{\tau_0^2}\right), b =\left(\sum_{j=1}^m \frac{\kappa_0 \theta_j}{\sigma^2_j} + \frac{\mu_0}{\tau_0^2} \right)$$
+From the theory we know that the expression in $(3)$ is the kernel of a normal: $N \left(\frac{b}{a}, \frac{1}{a} \right).$
+Hence we can finally write $\mu| \boldsymbol{\theta, \sigma^2} \sim N \left(\mu_n, \tau_n^2 \right)$, where: 
+$$\mu_n = \frac{b}{a} = \frac{\left(\sum_{j=1}^m \frac{\kappa_0\theta_j}{\sigma^2_j} + \frac{\mu_0}{\tau_0^2} \right)}{\left( \sum_{j=1}^m \frac{\kappa_0}{\sigma^2_j} + \frac{1}{\tau_0^2}\right)},\  \tau_n^2 = \frac{1}{a} = \left( \sum_{j=1}^m \frac{\kappa_0}{\sigma^2_j} + \frac{1}{\tau_0^2}\right)^{-1}$$
+
+Hence we can easily get draws sample $\mu$ from its conditional distribution: $p(\mu| \boldsymbol{\theta}, \boldsymbol{\sigma^2}, \mu_0, \tau_0) \sim N(\mu_n, \tau_n^2)$.
+
+## Full conditional of $\alpha, \beta$
+
+
+As we have stated before we have put a Gamma prior on both $\alpha, \beta$, the hyperparameters of the distribution on $\sigma^2_j$,  $\sigma^2_j| \alpha, \beta \sim I-Gamma(\alpha, \beta)$. We can notice that the vector $\boldsymbol{\sigma^2} = (\sigma^2_1,..,\sigma^2_9)$ is an **IID** sample from $I-Gamma(\alpha, \beta)$.
+Hence we have: 
+\begin{itemize}
+  \item $p(\alpha|a,b) \sim Gamma(a,b) \propto \alpha^{a-1} \cdot exp\{ -b \alpha \}$
+  \item $p(\beta|c,d) \sim Gamma(c,d) \propto \beta^{c-1} \cdot exp\{ -d \beta \}$. We also assume that the \textbf{Joint prior} is such that $\alpha \perp \beta$, i.e.: $p(\alpha, \beta) = p(\alpha) \cdot p(\beta)$ 
+  \item The joint distribution of $\boldsymbol{\sigma^2}$ is $p(\boldsymbol{\sigma^2} |\alpha, \beta) = \left( \frac{\beta^\alpha}{\Gamma(\alpha)} \right)^m \left[ \prod_{j=1}^m  \frac{1}{\sigma^2_j}\right]^{\alpha -1} \cdot exp\{- \beta \sum_{j=1}^m \frac{1}{\sigma^2_j}\}$
+\end{itemize}
+
+We now want to compute the **full conditionals**. 
+
+### Full conditional of $\beta$
+\begin{gather}
+p(\beta| \boldsymbol{\sigma^2}, \alpha, c, d) \propto p(\boldsymbol{\sigma^2} |\alpha, \beta) p(\beta|c,d) = \beta^{m \alpha} \cdot exp\{- \beta \sum_{j=1}^m \frac{1}{\sigma^2_j}\} \cdot \beta^{c-1} \cdot exp\{ -d \beta \} = \nonumber \\
+\beta^{m\alpha + c -1} \cdot exp\{ -\beta \left(\sum_{j=1}^m \frac{1}{\sigma^2_j} +d \right)\} \\
+\end{gather}
+
+The last expression is the Kernel of a Gamma distribution. Hence we have shown that the full conditional of $\beta$ is $\beta| \boldsymbol{\sigma^2}, \alpha, c,d \sim Gamma \left(m\alpha + c,  \sum_{j=1}^m \frac{1}{\sigma^2_j} +d\right)$.
+
+Hence we can easily sample $\beta$ from its full conditional since it s a Gamma distribution, but only conditionally on $\alpha, \boldsymbol{\sigma^2}$.
+
+### Full conditional on $\alpha$
+
+Let us now derive the full conditional distribution of $\alpha$: 
+\begin{gather}
+p(\alpha| \boldsymbol{\sigma^2}, \beta,a,b) \propto p(\boldsymbol{\sigma^2} | \beta, \alpha) p(\alpha|a,b) \propto \nonumber \\
+\left( \frac{\beta^\alpha}{\Gamma(\alpha)} \right)^m \left[ \prod_{j=1}^m  \frac{1}{\sigma^2_j}\right]^{\alpha -1} \alpha^{a-1} \cdot exp\{ -b \alpha \}
+\end{gather}
+
+The last expression can not be traced back to any well known distribution. 
+Hence to draw $\alpha$ from its full conditional distribution we need to implement a Metropolis Hasting step. 
+
+At the end of the day we want to approximate posterior draws of $(\alpha, \beta)$ from $p(\alpha, \beta| \boldsymbol{\sigma^2})$ we need to implement the following algorithm:
+
+
+$\forall s=1,..,S:$
+\begin{itemize}
+  \item Gibbs sample step for $\beta$: draw a value $\beta^{(s)}$ from its full conditional distribution: $p(\beta|\alpha, \boldsymbol{\sigma^2},c,d)$
+  \item Metropolis Hasting step to draw $\alpha$:
+\begin{enumerate}
+  \item Propose $\alpha^*$ from its proposal: $q(\alpha^*| \alpha^{(s)}) \sim Gamma (\alpha^{(s)} \delta, \delta)$
+  \item Compute $r^{MH} = \frac{p(\alpha^*, \beta^{(s)}| \boldsymbol{\sigma^2})}{p(\alpha^{(s)}, \beta^{(s)}| \boldsymbol{\sigma^2})} \cdot \frac{q(\alpha^{(s)}| \alpha^{*})}{q(\alpha^*| \alpha^{(s)})}$
+  \item Set $\alpha^{(s+1)} = \alpha^*$ with probability $min \{1, r^{MH}\}$, or $\alpha^{(s+1)} = \alpha^{(s)}$ with probability $1- min \{1, r^{MH}\}$
+\end{enumerate}
+\end{itemize}
+The output of this algorithm will be a sequence of draws $\{(\alpha^{(1)}, \beta^{(1)}),..,(\alpha^{(s)}, \beta^{(s)})\}$ that approximates draws from the joint posterior of $\alpha \ and \ \beta$.
+
+
+## R Implementation
+
+We proceed by defining the function `Hierarchical_3`. This function implements the step of the algorithm that allows us to:
+$\forall s=1,..,S:$
+\begin{enumerate}
+  \item Draw $\beta^{(s)}$ from its full conditional distribution $p(\beta|\alpha^{(s-1)}, \boldsymbol{\sigma^{2(s-1)}},c,d)$, using \textbf{Gibbs Sampler}
+  \item Draw $\alpha^{(s)}$ from its full conditional distribution $p(\alpha| \boldsymbol{\sigma^{2(s-1)}}, \beta^{(s)},a,b)$ using a \textbf{Metropolis Hastings Step}
+  \item Draw $\sigma^{2(s)}_j$ from its full conditional distribution:
+  $p(\sigma^2_j| \mathbf{y_{1:n_j}}, \alpha^{(s)},\beta^{(s)} )$
+  \item Draw $\theta_j^{(s)}$ from its full conditional distribution:
+  $p(\theta_j| \sigma_j^{2(s)}, y_{1:n_j}, \mu^{(s-1)})$
+  \item Draw $\mu^{(s)}$ from its full conditional distribution: $p(\mu| \boldsymbol{\theta^{(s)}}, \boldsymbol{\sigma^{2(s)}}, \mu_0, \tau_0)$
+\end{enumerate}
+
+The output of the algorithm will be composed by: 
+
+- `Theta_Norm` $\rightarrow$ a $(S \times m)$ matrix which contains S draws for each $\theta_j,\forall j=1,..,m$ from their conditional distributions. Each column of the matrix represents an approximated sample from the posterior distribution of $\theta_j$.
+
+-  `Sigma_Norm` $\rightarrow$ a $(S \times m)$ matrix which contains S draws for each $\sigma^2_j,\forall j=1,..,m$ from their conditional distributions.
+- `MuAlBet` $\rightarrow$ a $(S \times 3)$ matrix which contains S draws respectively for $\mu, \alpha, \beta$.
+
+
+```{r}
+set.seed(12345)
+
+Hierarchical_3 <- function(S, delta) {
+  Theta_Norm <- matrix(NA, S, m)
+  Sigma_Norm <- matrix(NA, S, m)
+  MuAlBet <- matrix(NA, S, 3)
+  accept <- NULL
+  
+  # Prior hyperparameters
+    
+  theta <- y_bar
+  sigma2_j <- sv_j
+    
+  # Prior on theta
+    
+  mu = mean(y_bar)    # to favour small mean and small variance
+  k_0  = 0.1              # groups whose posterior is otherwise too
+                          # close to mu (group mean average) we lower
+                          # k_0 to 0.1
+  # Prior on sigma
+    
+  alpha = 0.5
+  beta = 1/(2*mean(sv_j))
+    
+  # Prior on mu
+    
+  mu_0 <- 12
+  tau02 <- 6^2
+    
+  # Prior on alpha and beta
+    
+  a <- b <- 1
+  c <- d <- 1
+  for(s in 1:S) {
+    
+    # 1. Draw beta
+    
+    c_star <- m*alpha + c
+    d_star <- sum(1/sigma2_j) + d
+    beta <- rgamma(1, c_star, d_star)
+    
+    # 2. Draw alpha
+    
+    alpha.star = propose.alpha.star(alpha, delta)
+    
+    
+    r = full.cond.alpha(alpha.star, beta, a, b, prod.prec, m)/ 
+      full.cond.alpha(alpha, beta, a, b, prod.prec, m) *
+      dgamma(alpha, alpha.star*delta, delta) / 
+      dgamma(alpha.star, alpha*delta, delta)
+    
+    u = runif(1)
+    
+    if(u < r){
+      alpha = alpha.star
+      accept[s] <- 1
+    }
+    else{
+      accept[s] <- 0
+    }
+    k_n <- k_0 + nj   # From "Draw theta_j"
+    
+    # 3. Draw sigma2_j
+    
+    alpha_s = nj/2 + alpha
+    beta_s  = (nj-1)/2 * sv_j + (nj*k_0)/2*k_n * (y_bar - mu)^2 + beta
+  
+    sigma2_j <- 1/rgamma(9, alpha_s, beta_s)
+      
+    Sigma_Norm[s,] <- sigma2_j
+    
+    # 4. Draw theta_j
+    
+    theta_n = (k_0 * mu + nj*y_bar)/k_n
+    
+    theta <- rnorm(9, theta_n, sqrt(sigma2_j/k_n))
+    
+    Theta_Norm[s,] <- theta
+    
+    # 5. Draw mu
+    
+    mu_n <- (sum(theta/sigma2_j)*k_0 + mu_0/tau02)/(sum(k_0/sigma2_j) + 1/tau02)
+    tau_n <- (sum(k_0/sigma2_j) + 1/tau02)^(-1)
+    
+    
+    mu <- rnorm(1, mu_n, sqrt(tau_n))
+  
+    MuAlBet[s,] <- c(mu, alpha, beta)
+    
+  }
+  return(list(Theta_Norm = Theta_Norm,
+              Sigma_Norm = Sigma_Norm,
+              MuAlBet = MuAlBet,
+              accept = accept))
+}
+
+
+Out3 <- Hierarchical_3(5000, 20)
+Theta_Norm <- Out3$Theta_Norm
+Sigma_Norm <- Out3$Sigma_Norm
+MuAlBet <- Out3$MuAlBet
+accept_3 <- Out3$accept
+
+mean(accept_3)
+
+```
+We have also created a vector `accept_3` that collects the number of times in which the proposed value of $\alpha$ is accepted at the end of Metropolis Hasting steps. This vector has been used in order to tune $\delta$. In particular, we have chosen $\delta = 20$, which seems to be a nice choice since the acceptance rate is `r toString(mean(accept_3))`.
+
+Let us start to analyze our result by performing some \textbf{MCMC diagnostics}. 
+
+### Traceplots
+
+
+- Traceplot for `Theta_Norm`:
+
+```{r}
+S = 5000
+par(mfrow = c(2,2))
+idx = c(1,3,7,9)
+for (i in idx) {
+  plot(1:S, Theta_Norm[,i], type = "l", xlim = c(0, 1000),col="deepskyblue4")
+  abline(h = mean(Theta_Norm[,i]),col="chocolate3", lwd=1 )
+  mode_1 <- density(Theta_Norm[,i])$x[which.max(density(Theta_Norm[,i])$y)]
+  abline(h = mode_1,col="darkolivegreen1", lwd=1 )
+  
+}
+```
+For what concerns posterior draws of $\theta_j, j=1,..m$ it seems that no peculiar patterns arise. 
+
+- Traceplot for `Sigma_Norm`:
+
+```{r}
+par(mfrow = c(2,2))
+for (i in idx) {
+  plot(1:S, Sigma_Norm[,i], type = "l", xlim = c(0, 1000),col="deepskyblue4")
+  abline(h = mean(Sigma_Norm[,i]),col="chocolate3", lwd=1 )
+  mode_1 <- density(Sigma_Norm[,i])$x[which.max(density(Sigma_Norm[,i])$y)]
+  abline(h = mode_1,col="darkolivegreen1", lwd=1 )
+}
+```
+
+- Traceplot for `MuAlBet`:
+```{r}
+par(mfrow=c(3,1))
+for (i in 1:3) {
+  plot(1:S, MuAlBet[,i], type = "l", xlim = c(0, 1000),col="deepskyblue4")
+  abline(h = mean(MuAlBet[,i]),col="chocolate3", lwd=1 )
+  mode_1 <- density(MuAlBet[,i])$x[which.max(density(MuAlBet[,i])$y)]
+  abline(h = mode_1,col="darkolivegreen1", lwd=1 )
+  
+}
+```
+The traceplot for $\alpha$ seems to be problematic. Hence we check for the \textbf{acf} and then we will decide if it is necessary to \textbf{thin} the draws.
+
+### Autocorrelation function
+
+- acf for `Theta_Norm`: 
+```{r}
+par(mfrow = c(2,2))
+for(i in idx) {
+  acf(Theta_Norm[,i], 100, main = "")
+}
+```
+We see that there are no problems of dependence in the chains since the autocorrelation lies in between the dotted lines. 
+
+- acf for `Sigma_Norm`: 
+```{r}
+par(mfrow=c(2,2))
+for(i in idx) {
+  acf(Sigma_Norm[,i], 100, main= "")
+}
+```
+
+We see that there is a bit of dependence, but it does not seems to be that much problematic.
+
+- acf for `MuAlBet`:
+```{r}
+par(mfrow = c(3,1))
+for(i in 1:3) {
+  acf(MuAlBet[,i], 100, main="")
+}
+
+```
+As it was foreseeable, we must perform \textbf{thinning} since the chain is a dependent sequence and hence it can not be considered as an i.i.d. sample that approximates the posterior distribution of $\alpha$.
+
+### Thinning
+
+```{r}
+set.seed(12345)
+Out3_T <- Hierarchical_3(S=50000, 20)
+Theta_Norm_T <- Out3_T$Theta_Norm[seq(1, 50000, by = 10),]
+Sigma_Norm_T <- Out3_T$Sigma_Norm[seq(1, 50000, by = 10),]
+MuAlBet_T <- Out3_T$MuAlBet[seq(1, 50000, by = 10),]
+accept_3 <- Out3_T$accept
+
+mean(accept_3)
+```
+Let us now check again the traceplots and acf for `MuAlBet_T` after having performed thinning. 
+
+```{r}
+par(mfrow = c(3,1))
+for (i in 1:3) {
+  plot(1:S, MuAlBet_T[,i], type = "l", xlim = c(0, 1000),col="deepskyblue4")
+  abline(h = mean(MuAlBet_T[,i]),col="chocolate3", lwd=1 )
+  mode_1 <- density(MuAlBet_T[,i])$x[which.max(density(MuAlBet_T[,i])$y)]
+  abline(h = mode_1,col="darkolivegreen1", lwd=1 )
+  
+}
+
+
+for(i in 1:3) {
+  acf(MuAlBet_T[,2], 100, main="")
+}
+
+```
+
+Both the traceplot and the acf suggest that things have improved a lot. It seems that there isn't any strange pattern and that the autocorrelation is still a bit high but it shrinks faster: it takes only few observations to get down. 
+
+To be sure that the chains have reached stationarity we can perform a formal test: \textbf{Geweke test}.
+
+```{r, message=FALSE}
+library(coda)
+geweke.diag(Theta_Norm_T, 0.1, 0.1)
+
+geweke.diag(Sigma_Norm_T, 0.1, 0.1)
+
+geweke.diag(MuAlBet_T, 0.1, 0.1)
+
+pnorm(abs(geweke.diag(MuAlBet_T, 0.1, 0.1)$z),
+      lower.tail = FALSE)*2
+
+```
+
+Since all the values assumed by $Z- statistic$ ($z$ from now on) of the Geweke test are such that $|z| \leq 1.96$ we do not reject $H_0$ at significance level $\alpha=0.05$. Hence the null hypothesis of stationarity is confirmed. 
+
+
+From now on let us look closer at the matrix `Theta_Norm_T` that approximates posterior draws of $\theta_j, \forall j=1,..,m$. This is the focus of our analysis, since our aim is to check whether the difference in terms of groups averages is a characteristic concerning our small sample, or can be seen as a feature of the population. 
+
+
+We start by summarizing our posterior draws of $\theta_j$ with the "empirical" posterior expectations, computed simply by referring to Monte Carlo methods: $\mathbb{E}[\theta_j| y_{1:n_j}, \sigma^2_j, \mu] \simeq \frac{1}{S}\sum_{s=1}^S \theta_j^{(s)}$. 
+
+
+```{r}
+post_mean_Norm <- apply(Theta_Norm_T, 2, mean)
+order(post_mean_Norm)
+```
+
+
+Group 7 -- Meat group -- has the highest posterior expectation. This means that, accordingly to our model specification, it is true that a posteriori we expect to have a level of $CO2$ emission that is on average higher for meat group than others'.
+
+We can also visualize this result by looking at the following plots: 
+
+
+
+### Boxplot of posterior draws of $\theta_j$
+
+```{r}
+boxplot(Theta_Norm_T,
+        main = expression(paste("Normal Posterior on ",theta[j])),
+        col = my_col, xlab = "Groups",
+        ylab= "")
+title(ylab = expression(paste("p(",theta[j], "|", mu,",", sigma[j]^2, ",",
+                              italic(y[1]),"...",italic(y[m]),")") ),
+      mgp = c(2,1,0))
+library(plotrix)
+draw.circle(7, 21, 0.5, border = "red", lwd = 2)
+
+
+```
+From the boxplot we visualize the approximated posterior distribution of $\theta_j, j = 1,..m$ and we see that  meat group has the highest average level of $CO2$ emissions. We can also see that seventh group has the highest posterior variance, and this is confirmed also by the following plot. 
+
+### Prior vs posterior plot
+We now want to plot \textbf{prior vs posterior} distributions of $\theta_j$.
+
+We know that the prior on $\theta_j | \mu, \sigma^2_j, \kappa_0 \sim N \left( \mu, \frac{\sigma^2_j}{\kappa_0} \right)$, but we have considered $\mu$ as random, i.e. $\mu \sim N(\mu_0, \tau_0^2)$, and also $\sigma^2_j$ is considered random since $\sigma^2_j|\alpha, \beta \sim I-Gamma(\alpha, \beta)$. In addition we have also put a Gamma prior on both $\alpha$ and $\beta$. Hence to sample from the prior of $\theta_j$ we need to: 
+\begin{itemize}
+  \item Sample $\alpha^{(s)}$ from $p(\alpha| a, b) \sim Gamma(a,b)$
+  \item Sample $\beta^{(s)}$ from $p(\beta|c,d) \sim Gamma(c,d)$
+  \item Sample $\sigma^{2(s)}_j$ from $p(\sigma^{2(s)}_j| \alpha^{(s)}, \beta^{(s)}) \sim I-Gamma(\alpha^{(s)}, \beta^{(s)})$
+  \item Sample $\mu^{(s)}$ from $p(\mu|\mu_0, \tau_0^2)$ 
+\end{itemize}
+
+And finally for each j, $j=1,..,m$ we are able to sample $\theta_j|\alpha^{(s)}, \beta^{(s)}, \mu^{(s)}, \sigma^{2(s)}_j) \sim N \left( \mu^{(s)}, \frac{\sigma^{2(s)}_j}{\kappa_0} \right)$
+
+```{r, warning=FALSE}
+marginal_prior_H3 <- function(N) {
+  Theta_marg_H3 = matrix(NA, N, m)
+  k_0 = 0.1
+  
+  for (j in 1:m){
+    alpha_marg   = rgamma(N, 1, 1)
+    beta_marg    = rgamma(N, 1, 1)
+    sigma2j_marg = 1/rgamma(N, alpha_marg, beta_marg)
+    mu_marg      = rnorm(N, 12, 6)
+    Theta_marg_H3[,j] = rnorm(N, mu_marg, sqrt(sigma2j_marg/k_0))
+  }
+  return(Theta_marg_H3)
+}
+set.seed(12345)
+Theta_marg_H3 = marginal_prior_H3(N = 5000)
+
+par(mfrow=c(2,2))
+for(j in idx){
+   if(j == 7){
+    plot(density(Theta_Norm_T[,j],adj=2),main="", 
+         xlab=expression(theta[j]), ylab="density",lwd=2, col="darkgreen",
+         ylim = c(0,0.09))
+    abline(v = y_bar[j],col="darkred", lwd=1 )
+    lines(density(as.vector(na.omit(Theta_marg_H3[,j])), adj = 2),
+          lwd=2, col="darkolivegreen3") 
+    legend("bottomleft",legend=c("posterior","prior"),lwd=c(2,2),
+           col=c("darkgreen","darkolivegreen3"),bty="n")
+  }
+  else if(j == 9){
+    plot(density(Theta_Norm_T[,j],adj=2),main="", 
+         xlab=expression(theta[j]), ylab="density",lwd=2, col="darkgreen",
+         ylim = c(0,0.13))
+    abline(v = y_bar[j],col="darkred", lwd=1 )
+    lines(density(as.vector(na.omit(Theta_marg_H3[,j])), adj = 2),
+          lwd=2, col="darkolivegreen3") 
+    
+    legend("bottomleft",legend=c("posterior","prior"),lwd=c(2,2),
+           col=c("darkgreen","darkolivegreen3"),bty="n")
+  }
+  else{
+    plot(density(Theta_Norm_T[,j],adj=2),main="", 
+         xlab=expression(theta[j]), ylab="density",lwd=2, col="darkgreen")
+    abline(v = y_bar[j],col="darkred", lwd=1 )
+    lines(density(as.vector(na.omit(Theta_marg_H3[,j])), adj = 2),
+          lwd=2, col="darkolivegreen3")
+    legend("topleft",legend=c("posterior","prior"),lwd=c(2,2),
+           col=c("darkgreen","darkolivegreen3"),bty="n")
+  }
+  
+}
+
+```
+From the above plots we can notice that priors are flat. We reached this by sampling $\sigma^{2(s)}_j$ from a distribution having random hyperparameters being themselves drawn in order to be non informative. Indeed, we get values of  $\sigma^{2(s)}_j$ that are such high, to be `Inf` in some cases. As consequence we expect that $\theta_j$'s posterior distributions follow a $N \left(\bar{y_j}, \sigma^2_j/n_j \right)$. This can be seen easily by looking at the plot: all the posteriors are perfectly centered around the corresponding sample mean.  Another consequence of being a priori non informative, is the fact the posterior on $\sigma^{2(s)}_j$ reflects information coming from data. 
+
+Hence also the posterior variance of each $\theta_j$ ($\sigma^2_j/n_j$), will reflect, considering that we have small and homogeneous $n_j$, groups sample variances. Indeed we have that plots appearing in the first row and  referring to groups one and three -- Grain products and Oils, respectively-- are more concentrated than the ones in the second row. This is due to the fact that Grain products and Oils had originally a small sample variance and hence also the posterior distribution of $\theta_1, \theta_3$ will be concentrated. In the second line, instead we are plotting group 7 and 9: Meat and Others, whose sample variances were high and hence the posterior distributions $\theta_7, \theta_9$ are spread having a posterior variance $\hat{s}^2_{nj}$ equal to `r toString(round(var(Theta_Norm_T[,7]),2))`, `r toString(round(var(Theta_Norm_T[,9]),3))`.
+
+### Histogram of posterior (approximated) draws of $\theta_j, \forall j = 1,..,m$
+```{r}
+par(mfrow=c(2,2))
+idx = c(1,3,7,9)
+for(i in idx) {
+  hist(Theta_Norm_T[,i], breaks = 100, col = "aquamarine3", 
+       border = "deepskyblue4", main="", xlab = expression(theta[j]))
+  abline(v = mean(Theta_Norm_T[,i]),col="chocolate3", lwd=1 )
+  abline(v = y_bar[i],col="darkolivegreen1", lwd=1 )
+}
+```
+
+The four histograms above represent an approximation of the posterior distribution of $\theta_j$, where $j=1,3,7,9$, respectively. We see that they follow a Normal distribution centered around the empirical posterior expectation computed before. We can also notice that in most of the cases we got that the posterior expectation overlaps the sample mean, which means that they coincide. This result was coherent with thw previous plot.
+
+
+The following table shows the empirical posterior expectations $\mathbb{E}[\theta_j| y_{1:n_j}, \sigma^2_j, \mu] \simeq \frac{1}{S}\sum_{s=1}^S \theta_j^{(s)}$ and the lower and upper bounds of $90\%$ Credible Intervals for the posterior distribution of $\theta_j$.
+
+```{r}
+res_N = matrix(NA, 9, 3)
+rownames(res_N) <- 1:9
+colnames(res_N) <- c("LB CrI", "UB CrI", "PostExp")
+
+res_N[,1] <- apply(Theta_Norm_T, 2, quantile, 0.05)
+res_N[,2] <- apply(Theta_Norm_T, 2, quantile, 0.95)
+res_N[,3] <- post_mean_Norm
+knitr::kable(res_N)
+```
+
+### Prediction
+
+We now want to compute: 
+\begin{itemize}
+  \item $P(\theta_7 >\theta_j| data)$ where $j=1,..,m \ \wedge j \neq7$. This means that we want to approximate the posterior probability that the average level of $CO2$ produced by group meat is higher than the others.
+  We will use Monte Carlo approach to approximate $P(\theta_7 >\theta_j)$. Indeed, $P(\theta_7 >\theta_j) \approx \frac{1}{S} \sum_{s=1}^S \mathbb{I} \{\theta_7^{(s)}>\theta_j^{(s)} \}$
+  \item $P(Y^*_7 > Y^*_j| data)$, where where $j=1,..,m \ \wedge j \neq7$. This is an individual prediction: we randomly select a unit from population 7 (meat) and we want to calculate the probability that the unit referring to meat group emits more $CO2$ than a unit coming from a different group. Being this an individual prediction, we expect that this probability is lower than the first one, since it is necessary to take into account also individual variability.
+\end{itemize}
+
+```{r}
+prob_N <- NULL
+pred_N <- NULL
+
+
+
+for (j in 1:m){
+  if (j != 7){
+    prob_N <- c(prob_N, mean(Theta_Norm_T[,7]>Theta_Norm_T[,j]))
+    pred_N <- c(pred_N, mean(rnorm(5000, Theta_Norm_T[,7], sqrt(Sigma_Norm_T[,7])) >
+                                 rnorm(5000, Theta_Norm_T[,j], sqrt(Sigma_Norm_T[,j]))) )
+  }
+}
+res_P_N <- cbind(prob_N, pred_N)
+
+colnames(res_P_N) <- c("P(Theta_7 > Theta_j)", "P(Y*_7 > Y*_j)")
+knitr::kable(res_P_N)
+```
+
+The probability that the average level of $CO2$ emissions is higher for group meat than for others' is in all the cases bigger than $90\%$.
+
+By sampling at random a new unit from group meat we know that it will produce more $CO2$ than others with probability bigger than $70\%$ in all the cases.
+
+### Model checking 
+
+Finally, we want to check if our model is useful.
+We will take the group sample mean as statistic of the data. Then we evaluate its observed value $\bar{y_j} = \bar{y}_j{obs}$ and check its plausibility against the corresponding posterior predictive distribution. In practice, we will sample $n=1000$  values $y_j^*$ from the posterior predictive distribution; on each of these samples we will compute the sample mean: $\bar{y}_j{pred}$. At the end we will have a distribution of  $\bar{y}_j{pred}$ and we will check where $\bar{y}_j{obs}$ lies: if it lies in the tail of the distribution of $\bar{y}_j{pred}$ it means that the model does not hold; on the contrary if $\bar{y}_j{obs}$ lies inside the distribution of  $\bar{y}_j{pred}$ it means that the observed value of the statistic is plausible, and hence the model can be regarded as useful.
+
+Before proceeding we just need to understand how to sample from the posterior predictive distribution. 
+
+We know that $Y^*_j| \theta_j, \sigma^2_j \sim N(\theta_j, \sigma^2_j)$ and we know also that $Y^*_j \bot Y_j | \theta_j, \sigma^2_j$.
+Hence to sample new values from the predictive distribution we should compute:
+$$Pr(Y^*_j|Y_{1:nj}) = \int p(y^*_j|\theta_j, \sigma^2_j, y_{1:nj}) \cdot p(\theta_j| \sigma^2_j, y_{1:nj}) \cdot p(\sigma^2_j| y_{1:nj}) d\theta_j d\sigma^2_j =$$ 
+$$\int p(y^*_j|\theta_j, \sigma^2_j) \cdot p(\theta_j| \sigma^2_j, y_{1:nj}) \cdot p(\sigma^2_j| y_{1:nj}) d\theta_j d\sigma^2_j $$
+This integral is hard to be analytically solved, hence we will use Monte Carlo approach in order to get draws from the posterior predictive distribution.
+
+Indeed we are going to sample $y^{*(s)}_j$ from $p(y^*_j | \theta_j^{(s)}, \sigma^{2(s)}_j) \sim N (\theta_j^{(s)}, \sigma^{2(s)}_j)$, where:
+\begin{itemize}
+  \item $\sigma^{2(s)}_j$ it's a drawn from $p(\sigma^2_j| y_{i:nj}, \alpha, \beta)$
+  \item $\theta_j^{(s)}$ it's a drawn from $p(\theta_j^{(s)} | y_{i:nj}, \mu^{(s)}, \sigma^{2(s)}_j)$
+\end{itemize}
+
+The sequence of $\{ \mathbf{y^{*(1)}_j},.., \mathbf{y^{*(S)}_j}\}$ will be a sequence of $S$ independent samples each of length $n=1000$, from the posterior predictive distribution. On each of these samples we will compute $\bar{y}_j^{(s)}{pred}$. At the end we will have $S$ values for $\bar{y}_j{pred}$ that approximates the distribution of $\bar{y}_j{pred}$.
+
+
+
+```{r}
+T_mc_N <- matrix(NA, 5000, m)
+k_0 <- 0.1
+
+for (j in 1:m){
+  for (i in 1:5000){
+    k_n <- k_0 + nj
+    y_star = rnorm(1000, Theta_Norm_T[i,j], 
+                   sqrt(Sigma_Norm_T[i,j]))
+    T_mc_N[i,j] = mean(y_star)
+  }
+}
+
+# Comparison of the distribution of T_mc VS y_bar
+
+res_mod_check_N = matrix(NA, m, 3)
+colnames(res_mod_check_N) <-c("90% LB", "9% UB", "y_bar")
+res_mod_check_N[,1] <- apply(T_mc_N, 2, quantile, 0.05)
+res_mod_check_N[,2] <- apply(T_mc_N, 2, quantile, 0.95)
+res_mod_check_N[,3] <- y_bar
+
+#knitr::kable(res_mod_check_N)
+
+par(mfrow=c(2,2))
+for(i in idx) {
+    hist(T_mc_N[,i], breaks = 100, col = "chartreuse2", 
+         border = "chartreuse4", main = "")
+    abline(v = y_bar[i],col="darkorange", lwd=3 )
+    abline(v = res_mod_check_N[i,1], col ="darkorange4", lty=2)
+    abline(v = res_mod_check_N[i,2], col ="darkorange4", lty=2)
+  }
+
+```
+
+We have reported only four plots, but as it can be seen also from the table above, we have that $\forall j, \bar{y}_j{obs}$ lies inside the distribution of $\bar{y}_j{pred}$. Hence the model can be regarded as useful. 
+
+
+
+# Log Model
+
+
+In all the previous model our aim was to analyse the level of  $CO2$ emission produced by each group and make inference on it. We have modeled this variable and fitted three different hierarchical models, which share the Normality assumption on our data. From the beginning we have noticed that this choice was probably not the best one, since the domain of `Total emission` is strictly positive. However, we do not find any particular problem since in most of the cases even the posterior $90\%$ Credible Intervals were entirely positive. 
+
+
+However, a possible solution to this lack of coherence is to model the logarithm of our variable `Total emission`. We know that the logarithm has a strictly positive domain, which will be perfectly suit our data, whereas its codomain takes values into $- \infty, + \infty$. In this way we would not make any forcing by assuming Normality of our data. However, we lose a lot in terms of interpretability. 
+
+
+We have fitted all the three models adopting the logarithmic transformation of our data, and the results remain substantially unchanged. In the following we will show how the third hierarchical model fits the log of our data.
+
+
+Let us start by applying the logarithmic transformation to our data:
+```{r}
+food1$Total_emissions <- log(food1$Total_emissions)
+```
+
+Let us perform a bit of \textbf{Exploratory analysis} of our data again. 
+
+We start by looking at the groups' boxplot of $CO2$ emissions: 
+```{r}
+boxplot(food1$Total_emissions ~ food1$Group, col= my_col,
+        main = "Data boxplots", xlab= "Groups", 
+        ylab = "CO2 emissions")
+
+```
+We now compute some sample statistics: 
+```{r}
+#Sample statistics
+y_bar <- as.vector(tapply(food1$Total_emissions, food$Group, mean))
+m <- length(y_bar)
+sv_j <- as.vector(tapply(food1$Total_emissions, food1$Group, var))
+nj <- as.vector(table(food1$Group))
+
+```
+The only substantial difference that we have compared to original data is in sample variances' values. Indeed,under log transformation, we observe that they are much more homogeneous than in the original setting (e.g. by looking at the seventh group we now observe a sample variance $\approx 0.88$, whereas in the original framework it had the highest value, being it $\approx 460$).
+This fact can be also visualized by looking at the above boxplot: width of the boxes seems to be much more homogeneous. However, this consideration should not affect our analysis. We just expect that, accordingly to our model specification, also the posterior distributions of $\theta_j$ will have a much more homogeneous variance across groups, since we are still modelling $\theta_j| \sigma^2_j$, and all the considerations done before hold. For example is still valid what we said on noninformativeness a prioir: prior variances that we sampled  and plug in $\theta_j$ prior distribution are such high that make it flat. Hence we know that the posterior distribution of $theta_j$ will be quite similar to $N (\bar{y_j}, \sigma^2_j/n)$.
+\hfill\break
+Let us recall the assumptions of the third model:
+
+
+\begin{enumerate}
+  \item $Y_{1:n_j} | \theta_j, \sigma^2_j \sim N(\theta_j, \sigma^2_j) \rightarrow$ we assume that the units inside each group follow a Normal distribution centered around $\theta_j$ (mean of group $j$) and having variance $\sigma^2_j$ (variance of group $j$).
+  \item $\theta_j|\sigma^2_j \sim N\left(\mu, \frac{\sigma^2_j}{\kappa_0}\right) \rightarrow$ all the $\theta_j$ follow a Normal distribution centered at the same value $\mu$, but each of them vary accordingly to the group's variance. Hence we are assuming that they are \textbf{independent} (their joint distribution is factorized as a product), but they are \textbf{not identically distributed}, since their variance is specific for each group. 
+  \item $\sigma^2_j| \alpha, \beta \sim I-Gamma (\alpha, \beta) \rightarrow$ this distribution represents the variability of the groups' variances
+\end{enumerate}
+
+We put a prior on: 
+\begin{enumerate}
+  \item $\mu$: $\mu| \mu_0, \tau_0^2 \sim N \left( \mu_0, \tau_0^2 \right) \rightarrow$ We are assuming that the mean of $\theta_j$ (i.e. average of group means) comes from a Normal. This population represents the hetereogenity of the groups' means.
+  \item $\alpha$: $\alpha| a, b \sim Gamma(a,b) \rightarrow$ this prior is \textbf{not conjugate:} we need to implement a Metropolis Hastings algorithm in order to draw $\alpha$ from $p(\alpha|a,b,\sigma^2_j)$
+  \item $\beta$: $\beta|c,d \sim Gamma(c,d) \rightarrow$ this is a semi - conjugate prior
+\end{enumerate}
+
+Hence in the following we implement a MCMC strategy to sample from the full conditionals that we derived in the previous discussion. 
+
+The only difference regards the Metropolis Hastings step that is performed to sample $\alpha$ from its full conditional distribution. Indeed, we are going to use the log ratio:
+$$log(r^{MH}) =  log(p(\alpha^*, \beta^{(s)}| \boldsymbol{\sigma^2}))-  log(p(\alpha^{(s)}, \beta^{(s)}| \boldsymbol{\sigma^2})) + log(q(\alpha^{(s)}| \alpha^{*}))-log(q(\alpha^*| \alpha^{(s)}))$$
+and we will compare it with $log(u), u \sim Unif(0,1)$.
+
+The following lines of code define some auxiliar functions: the logarithm of the full conditional distribution of $\alpha$ and of the proposal distribution.
+
+
+```{r}
+sum.prec <- sum(1/sv_j)
+
+log.full.cond.alpha <- function(alpha, beta, a, b, sum.prec, m){
+  m*alpha*log(beta) - m*lgamma(alpha) + (alpha-1)*log(sum.prec) +
+    (a-1)*log(alpha) - b*alpha
+}
+
+propose.alpha.star = function(alpha, delta){
+  
+  rgamma(1, alpha*delta, delta)
+}
+```
+
+
+Now we are ready to define the MCMC algorithm to sample from the full conditionals. 
+```{r}
+set.seed(12345)
+
+Hierarchical_3 <- function(S, delta) {
+  Theta_Norm <- matrix(NA, S, m)
+  Sigma_Norm <- matrix(NA, S, m)
+  MuAlBet <- matrix(NA, S, 3)
+  accept <- NULL
+  
+  # Prior hyperparameters
+  
+  theta <- y_bar
+  sigma2_j <- sv_j
+  
+  # Prior on theta
+  
+  mu = mean(y_bar)    # to favour small mean and small variance
+  k_0  = 0.1              # groups whose posterior is otherwise too
+  # close to mu (group mean average) we lower
+  # k_0 to 0.1
+  # Prior on sigma
+  
+  alpha = 30
+  beta = 20
+  
+  # Prior on mu
+  
+  mu_0 <- 1.7
+  tau02 <- 0.6^2
+  
+  # Prior on alpha and beta
+  
+  a <- b <- 1
+  c <- d <- 1
+  for(s in 1:S) {
+    
+    # 1. Draw beta
+    
+    c_star <- m*alpha + c
+    d_star <- sum(1/sigma2_j) + d
+    beta <- rgamma(1, c_star, d_star)
+    
+    # 2. Draw alpha
+    
+    alpha.star = propose.alpha.star(alpha, delta)
+    
+    
+    log.r = log.full.cond.alpha(alpha.star, beta, a, b, sum.prec, m) - 
+      log.full.cond.alpha(alpha, beta, a, b, sum.prec, m) +
+      dgamma(alpha, alpha.star*delta, delta, log = T) -
+      dgamma(alpha.star, alpha*delta, delta, log = T)
+    
+    log.u = runif(1)
+    
+    if(log.u < log.r){
+      alpha = alpha.star
+      accept[s] <- 1
+    }
+    else{
+      accept[s] <- 0
+    }
+    k_n <- k_0 + nj   # From "Draw theta_j"
+    
+    # 3. Draw sigma2_j
+    
+    alpha_s = nj/2 + alpha
+    beta_s  = (nj-1)/2 * sv_j + (nj*k_0)/2*k_n * (y_bar - mu)^2 + beta
+    
+    sigma2_j <- 1/rgamma(9, alpha_s, beta_s)
+    
+    Sigma_Norm[s,] <- sigma2_j
+    
+    # 4. Draw theta_j
+    
+    theta_n = (k_0 * mu + nj*y_bar)/k_n
+    
+    theta <- rnorm(9, theta_n, sqrt(sigma2_j/k_n))
+    
+    Theta_Norm[s,] <- theta
+    
+    # 5. Draw mu
+    
+    mu_n <- (sum(theta/sigma2_j)*k_0 + mu_0/tau02)/(sum(k_0/sigma2_j) + 1/tau02)
+    tau_n <- (sum(k_0/sigma2_j) + 1/tau02)^(-1)
+    
+    
+    mu <- rnorm(1, mu_n, sqrt(tau_n))
+    
+    MuAlBet[s,] <- c(mu, alpha, beta)
+    
+  }
+  return(list(Theta_Norm = Theta_Norm,
+              Sigma_Norm = Sigma_Norm,
+              MuAlBet = MuAlBet,
+              accept = accept))
+}
+```
+
+We ran the algorithm for $S=5000$ observations and we noticed some problematic dependence in the chains of $\alpha$ and $\beta$. Hence we have decided to perform \textbf{thinning}. 
+
+```{r}
+
+Out3 <- Hierarchical_3(50000, 6)
+Theta_Norm <- Out3$Theta_Norm
+Sigma_Norm <- Out3$Sigma_Norm
+MuAlBet <- Out3$MuAlBet
+Theta_Norm <- Theta_Norm[seq(1, 50000, by = 10),]
+Sigma_Norm <- Sigma_Norm[seq(1, 50000, by = 10),]
+MuAlBet <- MuAlBet[seq(1, 50000, by = 10),]
+```
+
+After having thinned the chains we check the traceplots, the acf and Geweke tests to verify that the chains have reached stationarity.
+
+## Traceplots
+
+
+- Traceplot for `Theta_Norm`:
+```{r}
+par(mfrow = c(2,2))
+idx = c(1,3,7,9)
+
+for (i in idx) {
+  plot(1:5000, Theta_Norm[,i], type = "l", xlim = c(0, 1000),col="deepskyblue4")
+  abline(h = mean(Theta_Norm[,i]),col="chocolate3", lwd=1 )
+  mode_1 <- density(Theta_Norm[,i])$x[which.max(density(Theta_Norm[,i])$y)]
+  abline(h = mode_1,col="darkolivegreen1", lwd=1 )
+  
+}
+```
+No peculiar pattern is present.
+
+- Traceplot for `Sigma_Norm`:
+```{r}
+par(mfrow=c(2,2))
+for (i in idx) {
+  plot(1:5000, Sigma_Norm[,i], type = "l", xlim = c(0, 1000),col="deepskyblue4")
+  abline(h = mean(Sigma_Norm[,i]),col="chocolate3", lwd=1 )
+  mode_1 <- density(Sigma_Norm[,i])$x[which.max(density(Sigma_Norm[,i])$y)]
+  abline(h = mode_1,col="darkolivegreen1", lwd=1 )
+  
+}
+```
+
+Also in this case there are no strange patterns.
+
+- Traceplot for `MuAlBet`:
+
+```{r}
+par(mfrow=c(3,1))
+for (i in 1:3) {
+  plot(1:5000, MuAlBet[,i], type = "l", xlim = c(0, 1000),col="deepskyblue4")
+  abline(h = mean(MuAlBet[,i]),col="chocolate3", lwd=1 )
+  mode_1 <- density(MuAlBet[,i])$x[which.max(density(MuAlBet[,i])$y)]
+  abline(h = mode_1,col="darkolivegreen1", lwd=1 )
+  
+}
+```
+$\alpha's$ traceplot seems to be still a bit problematic. We can investigate more deeply by looking at the acf.
+
+## Autocorrelation function (acf)
+
+- Acf for `Theta_Norm`: 
+```{r}
+par(mfrow=c(2,2))
+for(i in idx) {
+  acf(Theta_Norm[,i], 100, main = "")
+}
+```
+
+There is not dependence in the chain.
+
+- Acf for `Sigma_Norm`:
+```{r}
+par(mfrow=c(2,2))
+for(i in idx) {
+  acf(Sigma_Norm[,i], 100, main = "")
+}
+```
+Also in this case the chain is not a dependent sequence.
+
+- Acf for `MuAlBet`:
+```{r}
+par(mfrow = c(3,1))
+for(i in 1:3) {
+  acf(MuAlBet[,i], 100, main ="")
+}
+```
+ $\alpha's$ and $\beta's$ chains have still a bit of autocorrelation among the elements in the sequence. However, in both the cases, it does not seem to be problematic: it takes only few observations to get down.
+
+To have a confirmation that the chains have reached stationarity we can perform the **Geweke test**. 
+
+```{r}
+library(coda)
+geweke.diag(Theta_Norm, 0.1, 0.1)
+
+geweke.diag(Sigma_Norm, 0.1, 0.1)
+
+geweke.diag(MuAlBet, 0.1, 0.1)
+
+pnorm(abs(geweke.diag(MuAlBet, 0.1, 0.1)$z),
+      lower.tail = FALSE)*2
+```
+Since all the values assumed by the $Z - statistic$ ($z$ from now on) are such that $|z| \leq 1.96$, in all the cases we do not reject $H_0$: stationarity is confirmed. 
+
+
+As all in the other cases, let us focus on the matrix `Theta_Norm` that collects the drawn of $\theta_j$ that approximate their posterior distribution. 
+
+Firstly we summarize the data by computing the **"empirical"** posterior expectation simply by taking $\mathbb{E}[\theta_j | y_{1:nj}, \sigma^2_j, \mu, \kappa_0] \approx \frac{1}{S} \sum_{s=1}^S \theta_j^{(s)}$: 
+
+```{r}
+post_mean_Norm <- apply(Theta_Norm, 2, mean)
+order(post_mean_Norm)
+```
+We see that nothing changes under the logarithmic model: also in this case meat group has the highest posterior expectation. This means that a posteriori we will have that on average meat group is the most polluting one.
+
+This result can be visualized also by looking at the following plots.
+
+## Boxplot of posterior distributions of $\theta_j$
+
+```{r}
+boxplot(Theta_Norm,
+        main = expression(paste("Normal Posterior on ",theta[j])),
+        col = my_col, xlab = "Groups",
+        ylab= "")
+title(ylab = expression(paste("p(",theta[j], "|", mu,",", sigma[j]^2, ",",
+                              italic(y[1]),"...",italic(y[m]),")") ),
+      mgp = c(2,1,0))
+library(plotrix)
+draw.circle(7, 2.8, 0.5, border = "red", lwd = 2)
+
+```
+In this boxplot we can effectively visualize our previous consideration about variability of posterior variances among groups. Given the logarithmic transformation and its effect in making variances homogeneous, we see that also the posterior variances of $\theta_j$ are much more similar across groups. This is not surprising 
+referring to homogeneity of variances, but it is very different from the original dataset in which we got  meat group's posterior variance higher than the others'.
+
+
+## Histogram of posterior distributions of $\theta_j$
+
+```{r}
+par(mfrow=c(2,2))
+for(i in idx) {
+  hist(Theta_Norm[,i], breaks = 50, col = "aquamarine3", 
+       border = "deepskyblue4", main = "", xlab = expression(theta[j]))
+  abline(v = mean(Theta_Norm[,i]),col="chocolate3", lwd=1 )
+  abline(v = y_bar[i],col="darkolivegreen1", lwd=2 )
+}
+```
+
+Above we have plot histograms of posterior distributions of $\theta_1, \theta_3, \theta_7, \theta_9.$ We see that all of them follows a Normal distribution centered around the empirical posterior mean and mode, thus leading to symmetry of distribution. 
+
+In particular we observe again that meat's group is centered around the highest posterior expectation. Posterior expectations and sample means coincide. This is not surprising for what we have said before: we had priors on $\theta_j$ which were flat due to the high values of the sampled $\sigma^2_j$ and for the smallness of $\kappa_0 = 0.1$ (prior sample size). Indeed we know that the posterior distribution on $\theta_j$ should be close to $N(\bar{y_j}, \sigma^2_j/n_j)$. This is what happens and it is confirmed also by the following plot.
+
+## Prior vs Posterior plot of $\theta_j$
+
+We proceed as before. Indeed, we have to approximate the prior marginal distributions $\theta_j|\sigma^2_j$. This is done by sampling values for $\alpha, \beta$, from their priors, and then plugging them in order to sample $\sigma^2_j$ ($\sigma^{2(s)}_j$). We ave also to sample $\mu$ ($\mu^{(s)}$) from its prior and then we are able to sample $\theta_j$ from $N \left( \mu^{(s)}, \frac{\sigma^2_j}{\kappa_0} \right)$.
+In `R` this is done using function `marginal_prior_H3`.
+
+After having obtained draws that approximate the marginal prior of $\theta_j$ we can easily plot them together with the approximated posteriors.
+```{r, warning=FALSE}
+
+marginal_prior_H3 <- function(N) {
+  Theta_marg_H3 = matrix(NA, N, m)
+  k_0 = 0.1
+  
+  for (j in 1:m){
+    alpha_marg   = rgamma(N, 1, 1)
+    beta_marg    = rgamma(N, 1, 1)
+    sigma2j_marg = 1/rgamma(N, alpha_marg, beta_marg)
+    mu_marg      = rnorm(N, 12, 6)
+    Theta_marg_H3[,j] = rnorm(N, mu_marg, sqrt(sigma2j_marg/k_0))
+  }
+  return(Theta_marg_H3)
+}
+set.seed(12345)
+Theta_marg_H3 = marginal_prior_H3(N = 5000)
+
+par(mfrow=c(2,2))
+for(j in idx){
+  plot(density(Theta_Norm[,j],adj=2),main="", 
+       xlab=expression(theta[j]), ylab="density",lwd=2, col="darkgreen")
+  abline(v = y_bar[j],col="darkred", lwd=2 )
+  lines(density(as.vector(na.omit(Theta_marg_H3[,j])), adj = 2),
+        lwd=2, col="darkolivegreen3")
+  legend("topleft",legend=c("posterior","prior"),lwd=c(2,2),
+         col=c("darkgreen","darkolivegreen3"),bty="n")
+}
+```
+
+As in the original dataset we see that we reached the objective of non-informativeness, seems priors are flat. 
+As we have foreseen previously, we see that posteriors for group $7$ and $9$ are much more concentrated than before. This is due to the effect of log transformation in making variances more homogeneous and lower than their original values. The red line represents the sample mean of each group and we notice that all the posterior distributions are centered on it.
+
+Homogeneity in posterior variances and their reduction connected to the logarithmic transformation lead to less width Credible intervals, as it can be seen in the following table: 
+
+```{r}
+res_N = matrix(NA, 9, 3)
+rownames(res_N) <- 1:9
+
+colnames(res_N) <- c("LB_90%_CrI", "UB_90%_CrI", "PostExp theta_j_N")
+
+res_N[,1] <- apply(Theta_Norm, 2, quantile, 0.05)
+res_N[,2] <- apply(Theta_Norm, 2, quantile, 0.95)
+res_N[,3] <- post_mean_Norm
+knitr::kable(res_N)
+```
+
+
+
+## Prediction 
+
+As before, we want to compute: 
+\begin{itemize}
+  \item $P(\theta_7 >\theta_j| data)$ where $j=1,..,m \ \wedge j \neq7$. This means that we want to approximate the posterior probability that the average level of $CO2$ produced by group meat is higher than the others.
+  As stated before, we will use Monte Carlo approach to approximate  $P(\theta_7 >\theta_j) \approx \frac{1}{S} \sum_{s=1}^S \mathbb{I} \{\theta_7^{(s)}>\theta_j^{(s)} \}$
+  \item $P(Y^*_7 > Y^*_j| data)$, where where $j=1,..,m \ \wedge j \neq7$. This is an individual prediction: we randomly select a unit from predictive distribution of group 7 (meat) and we calculate the probability that the unit referring to meat group emits more $CO2$ than a unit coming from a different group. Being this an individual prediction, we expect that this probability is lower than the first one, since it is necessary to take into account also individual variability.
+\end{itemize}
+
+```{r}
+prob_N <- NULL
+pred_N <- NULL
+
+
+
+for (j in 1:m){
+  if (j != 7){
+    prob_N <- c(prob_N, mean(Theta_Norm[,7]>Theta_Norm[,j]))
+    pred_N <- c(pred_N, mean(rnorm(5000, Theta_Norm[,7], sqrt(Sigma_Norm[,7])) >
+                               rnorm(5000, Theta_Norm[,j], sqrt(Sigma_Norm[,j]))) )
+  }
+}
+res_P_N <- cbind(prob_N, pred_N)
+
+colnames(res_P_N) <- c("P(Theta_7 > Theta_j)", "P(Y*_7 > Y*_j)")
+knitr::kable(res_P_N)
+
+```
+We see that prediction under log model gives basically the same results that we have obtained before; we are now even more confident in stating that on average the $CO2$ emissions produced by meat are higher than other groups', and the same holds for individual prediction. 
+
+
+## Model checking 
+
+The last step is to check whether our log model is useful or not. 
+As before we are going to use the same mean as statistic of our data.  We evaluate its observed value $\bar{y_j} = \bar{y}_j{obs}$ and check its plausibility against the corresponding posterior predictive distribution, i.e. the empirical distribution of the sample mean of data coming from posterior predictive: $\bar{y}_j{pred}$. 
+```{r}
+T_mc_N <- matrix(NA, 5000, m)
+k_0 <- 0.1
+
+for (j in 1:m){
+  for (i in 1:5000){
+    k_n <- k_0 + nj
+    y_star = rnorm(1000, Theta_Norm[i,j], 
+                   sqrt(Sigma_Norm[i,j]))
+    T_mc_N[i,j] = mean(y_star)
+  }
+}
+
+# Comparison of the distribution of T_mc VS y_bar
+
+res_mod_check_N = matrix(NA, m, 3)
+colnames(res_mod_check_N) <-c("90% LB", "90% UB", "y_bar")
+res_mod_check_N[,1] <- apply(T_mc_N, 2, quantile, 0.05)
+res_mod_check_N[,2] <- apply(T_mc_N, 2, quantile, 0.95)
+res_mod_check_N[,3] <- y_bar
+
+knitr::kable(res_mod_check_N)
+
+par(mfrow=c(2,2))
+for(i in idx) {
+    hist(T_mc_N[,i], breaks = 100, col = "chartreuse2", 
+         border = "chartreuse4", main = "")
+    abline(v = y_bar[i],col="darkorange", lwd=3 )
+    abline(v = res_mod_check_N[i,1], col ="darkorange4", lty=2)
+    abline(v = res_mod_check_N[i,2], col ="darkorange4", lty=2)
+  }
+
+```
+
+From the plots we can see that $\bar{y}_j{obs}$ lies inside the distribution of $\bar{y}_j{pred}$. Hence our model can be regarded as useful. 
+
+
